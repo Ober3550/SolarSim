@@ -17,7 +17,9 @@ const int groupSize = 4;
 double pi = 2 * acos(0.0);
 const float G = 10;
 const float zero = 0.f;
+const float m_r = 0.5f;
 __m128 gravity = _mm_broadcast_ss(&G);
+__m128 merge_r = _mm_broadcast_ss(&m_r);
 
 struct Planet {
     int* id;
@@ -117,6 +119,7 @@ public:
         if (id / groupSize < planets.size())
         {
             PlanetGroup* group = &planets[id / groupSize];
+            PlanetGroup* lastGroup = &planets[planetsLength / groupSize];
             int index = id % groupSize;
             if (PlanetOption temp = GetPlanet(planetsLength))
             {
@@ -127,6 +130,15 @@ public:
                 group->dy[index]    = *lastPlanet.dy;
                 group->mass[index]  = *lastPlanet.mass;
                 group->r[index]     = *lastPlanet.r;
+                // Don't forget to clear because simd will still do ops on these values
+                int lastIndex = planetsLength-1 % groupSize;
+                lastGroup->id[lastIndex]   = 0;
+                lastGroup->x[lastIndex]    = 0.f;
+                lastGroup->y[lastIndex]    = 0.f;
+                lastGroup->dx[lastIndex]   = 0.f;
+                lastGroup->dy[lastIndex]   = 0.f;
+                lastGroup->mass[lastIndex] = 0.f;
+                lastGroup->r[lastIndex]    = 0.f;
                 planetsLength--;
             }
         }
@@ -164,6 +176,29 @@ public:
         }
         return sprites;
     }
+    void MergePlanets(int idA, int idB)
+    {
+        assert(idA != idB);
+        if (PlanetOption tempA = GetPlanet(idA))
+        {
+            if (PlanetOption tempB = GetPlanet(idB))
+            {
+                Planet planetA = tempA;
+                Planet planetB = tempB;
+                float total_mass = *planetA.mass + *planetB.mass;
+                float relative_mass = (*planetB.mass / *planetA.mass) * 0.5f;
+                *planetA.x += *planetB.x * relative_mass;
+                *planetA.y += *planetB.y * relative_mass;
+                *planetA.dx = ((*planetA.dx) * (*planetA.mass) + *planetB.dx * *planetB.mass) / total_mass;
+                *planetA.dy = ((*planetA.dy) * (*planetA.mass) + *planetB.dy * *planetB.mass) / total_mass;
+                *planetA.mass = total_mass;
+                *planetA.r = sqrt(total_mass / pi) * 128.f;
+                // Remove planet B
+                // Recalculate planet As forces since its mass changed
+                RemovePlanet(idB);
+            }
+        }
+    }
     void UpdatePlanets()
     {
         // F = (G * m1 * m2) / r^2
@@ -190,20 +225,10 @@ public:
                             float r2 = pow(rx,2) + pow(ry,2);
 
                             // Check if planets merge
-                            float mass_r2 = pow(((*planetA.r + *planetB.r) * 0.5f),2);
+                            float mass_r2 = pow(((*planetA.r + *planetB.r) * m_r),2);
                             if (r2 < mass_r2)
                             {
-                                float total_mass = *planetA.mass + *planetB.mass;
-                                float relative_mass = ((*planetB.mass) / *planetA.mass) * 0.5f;
-                                *planetA.x += rx * relative_mass;
-                                *planetA.y += ry * relative_mass;
-                                *planetA.dx = ((*planetA.dx) * (*planetA.mass) + (*planetB.dx) * (*planetB.mass)) / total_mass;
-                                *planetA.dy = ((*planetA.dy) * (*planetA.mass) + (*planetB.dy) * (*planetB.mass)) / total_mass;
-                                *planetA.mass = total_mass;
-                                *planetA.r = sqrt(total_mass / pi) * 128.f;
-                                // Remove planet B
-                                // Recalculate planet As forces since its mass changed
-                                RemovePlanet(j);
+                                MergePlanets(i, j);
                                 i--;
                                 goto skip_calc;
                             }
@@ -226,6 +251,7 @@ public:
     {
         for (int i = 1; i <= planetsLength; i++)
         {
+            int j = 0;
             if (PlanetOption tempA = GetPlanet(i))
             {
                 Planet planetA = tempA;
@@ -241,6 +267,8 @@ public:
                     __m128 mplanetA_Fy = _mm_broadcast_ss(&zero);
                 };
                 __m128 planetA_mass = _mm_broadcast_ss(planetA.mass);
+                __m128 planetA_r = _mm_broadcast_ss(planetA.r);
+                float planet_id = *planetA.id;
 
                 for (PlanetGroup group : planets)
                 {
@@ -251,9 +279,31 @@ public:
                     __m128 rx2 = _mm_mul_ps(rx, rx);
                     __m128 ry2 = _mm_mul_ps(ry, ry);
                     // Find the radius squared
-                    __m128 r2 = _mm_add_ps(rx2, ry2);
+                    union {
+                        float  i_r2[groupSize];
+                        __m128 r2;
+                    };
+                    r2 = _mm_add_ps(rx2, ry2);
                     // Check if planets merge
-
+                    
+                    __m128 total_mass_r = _mm_add_ps(group.m_r, planetA_r);
+                    __m128 total_mass_r_check = _mm_mul_ps(total_mass_r, merge_r);
+                    union {
+                        float total_mass_r2[groupSize];
+                        __m128 m_total_mass_r2;
+                    };
+                    m_total_mass_r2 = _mm_mul_ps(total_mass_r_check, total_mass_r_check);
+                    
+                    for (int k = 0; k < groupSize; k++)
+                    {
+                        if (group.id[k] != 0 && planet_id != group.id[k] && i_r2[k] < total_mass_r2[k])
+                        {
+                            MergePlanets(i, j * groupSize + k + 1);
+                            i--;
+                            goto skip_group_calc;
+                        }
+                    }
+                    
                     // Calculate gravity
                     __m128 mass = _mm_mul_ps(group.m_mass, planetA_mass);
                     __m128 gm = _mm_mul_ps(mass, gravity); 
@@ -288,7 +338,9 @@ public:
                 }
                 *planetA.x += *planetA.dx;
                 *planetA.y += *planetA.dy;
+                j++;
             }
+        skip_group_calc: continue;
         }
     }
 };
@@ -391,8 +443,8 @@ int main()
         {
             for (int i = 0; i < updatesPerFrame; i++)
             {
-                system.UpdatePlanets();
-                //system.UpdatePlanetsGrouped();
+                //system.UpdatePlanets();
+                system.UpdatePlanetsGrouped();
             }
         }
 
