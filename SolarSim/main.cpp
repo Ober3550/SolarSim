@@ -121,6 +121,8 @@ public:
             PlanetGroup* group = &planets[id / groupSize];
             PlanetGroup* lastGroup = &planets[(planetsLength-1) / groupSize];
             int index = id % groupSize;
+            if (id == planetsLength)
+                goto clear_planet;
             if (PlanetOption temp = GetPlanet(planetsLength))
             {
                 Planet lastPlanet = temp;
@@ -130,32 +132,60 @@ public:
                 group->dy[index]    = *lastPlanet.dy;
                 group->mass[index]  = *lastPlanet.mass;
                 group->r[index]     = *lastPlanet.r;
-                // Don't forget to clear because simd will still do ops on these values
-                int lastIndex = planetsLength-1 % groupSize;
-                lastGroup->id[lastIndex]   = 0;
-                lastGroup->x[lastIndex]    = 0.f;
-                lastGroup->y[lastIndex]    = 0.f;
-                lastGroup->dx[lastIndex]   = 0.f;
-                lastGroup->dy[lastIndex]   = 0.f;
-                lastGroup->mass[lastIndex] = 0.f;
-                lastGroup->r[lastIndex]    = 0.f;
-                planetsLength--;
             }
+            // Don't forget to clear because simd will still do ops on these values
+            clear_planet:;
+            int lastIndex = (planetsLength - 1) % groupSize;
+            lastGroup->id[lastIndex] = 0;
+            lastGroup->x[lastIndex] = 0.f;
+            lastGroup->y[lastIndex] = 0.f;
+            lastGroup->dx[lastIndex] = 0.f;
+            lastGroup->dy[lastIndex] = 0.f;
+            lastGroup->mass[lastIndex] = 0.f;
+            lastGroup->r[lastIndex] = 0.f;
+            planetsLength--;
         }
     }
     void AddRandomSatellite(int id) {
         if (PlanetOption temp = GetPlanet(id))
         {
             Planet parent = temp;
+            const int angles = (360 * 8);
+            const int steps = 1000;
+            const float min_dis = 200.f;
+            const float max_dis = 1000.f;
+            const float dif_dis = max_dis - min_dis;
+            float angle = float(rand() % angles) / float(angles);
+            float magni = min_dis + float(rand() % steps) / float(steps) * dif_dis;
+            float new_x = cos(angle * 2.f * pi) * magni;
+            float new_y = sin(angle * 2.f * pi) * magni;
+            float new_dx;
+            float new_dy;
+            if (rand() & 1)
+            {
+                new_dx = cos(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
+                new_dy = sin(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
+            }
+            else
+            {
+                new_dx = cos(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
+                new_dy = sin(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
+            }
+            const float min_prop = 0.05;
+            const float max_prop = 0.5f;
+            const float dif_prop = max_prop - min_prop;
+            const int   mas_step = 1000;
+            float new_mass = min_prop + float(rand() % mas_step) / mas_step * dif_prop;
+            AddPlanet((*parent.x) + new_x, (*parent.y) + new_y, (*parent.dx) * new_mass + new_dx, (*parent.dy) * new_mass + new_dy, new_mass * (*parent.mass));
         }
     }
     SolarSystem()
     {
-        AddPlanet(-200, 0, 0, -1, 0.5);
-        AddPlanet(200, 0, 0, 1, 0.5);
-        AddPlanet(600, 0, 0, 1, 0.05);
-        AddPlanet(-600, 0, 0, -1, 0.05);
-        //AddPlanet(-72, 0, 0, 1, 1);
+        //AddPlanet(-200, 0, 0, -1, 0.5);
+        //AddPlanet(200, 0, 0, 1, 0.5);
+        //AddPlanet(600, 0, 0, 1, 0.05);
+        //AddPlanet(-600, 0, 0, -1, 0.05);
+        AddPlanet(0, 0, 0, 0, 1);
         //AddPlanet(72, 0, 0, -2, 0.5);
         //AddPlanet(-216, 0, 0, 2, 0.5);
     }
@@ -188,8 +218,8 @@ public:
                 Planet planetB = tempB;
                 float total_mass = *planetA.mass + *planetB.mass;
                 float relative_mass = (*planetB.mass / *planetA.mass) * 0.5f;
-                *planetA.x += *planetB.x * relative_mass;
-                *planetA.y += *planetB.y * relative_mass;
+                *planetA.x += (*planetB.x - *planetA.x) * relative_mass;
+                *planetA.y += (*planetB.y - *planetA.y) * relative_mass;
                 *planetA.dx = ((*planetA.dx) * (*planetA.mass) + *planetB.dx * *planetB.mass) / total_mass;
                 *planetA.dy = ((*planetA.dy) * (*planetA.mass) + *planetB.dy * *planetB.mass) / total_mass;
                 *planetA.mass = total_mass;
@@ -244,7 +274,7 @@ public:
                 *planetA.x += *planetA.dx;
                 *planetA.y += *planetA.dy;
 
-            skip_calc: continue;
+            skip_calc:;
             }
         }
     }
@@ -341,7 +371,7 @@ public:
                 *planetA.y += *planetA.dy;
                 j++;
             }
-        skip_group_calc: continue;
+        skip_group_calc:;
         }
     }
 };
@@ -390,8 +420,8 @@ int main()
                 if (event.mouseWheelScroll.delta != 0)
                 {
                     const float minZoom = 0.5;
-                    const float maxZoom = 16.f;
-                    zoom -= event.mouseWheelScroll.delta * 0.5;
+                    const float maxZoom = 64.f;
+                    zoom -= event.mouseWheelScroll.delta * 1.f;
                     if (zoom < minZoom)
                         zoom = minZoom;
                     if (zoom > maxZoom)
@@ -416,7 +446,7 @@ int main()
         static int updatesPerFrame = 1;
         ImGui::Text(std::string("FPS: "+std::to_string(frameRate)).c_str());
         ImGui::Text(std::string("UPS: " + std::to_string(frameRate * updatesPerFrame)).c_str());
-        ImGui::SliderInt(" :Updates Per Frame", &updatesPerFrame, 1, 10);
+        ImGui::SliderInt(" :Updates Per Frame", &updatesPerFrame, 1, 20);
         ImGui::End();
         frameClock.restart();
 
@@ -439,13 +469,17 @@ int main()
                 system.AddPlanet(smin, smin, 0, 0, 0.5);
                 selectedPlanet = system.planetsLength;
             }
+            if (ImGui::Button("Add Random"))
+            {
+                system.AddRandomSatellite(selectedPlanet);
+            }
         }
         if (!ImGui::IsWindowFocused())
         {
             for (int i = 0; i < updatesPerFrame; i++)
             {
-                //system.UpdatePlanets();
-                system.UpdatePlanetsGrouped();
+                system.UpdatePlanets();
+                //system.UpdatePlanetsGrouped();
             }
         }
 
