@@ -119,7 +119,7 @@ public:
         if (id / groupSize < planets.size())
         {
             PlanetGroup* group = &planets[id / groupSize];
-            PlanetGroup* lastGroup = &planets[planetsLength / groupSize];
+            PlanetGroup* lastGroup = &planets[(planetsLength-1) / groupSize];
             int index = id % groupSize;
             if (PlanetOption temp = GetPlanet(planetsLength))
             {
@@ -151,12 +151,13 @@ public:
     }
     SolarSystem()
     {
-        /*AddPlanet(-200, 0, 0, -1, 0.5);
+        AddPlanet(-200, 0, 0, -1, 0.5);
         AddPlanet(200, 0, 0, 1, 0.5);
         AddPlanet(600, 0, 0, 1, 0.05);
-        AddPlanet(-600, 0, 0, -1, 0.05);*/
-        AddPlanet(-72, 0, 0, 1, 1);
-        AddPlanet(72, 0, 0, -2, 0.5);
+        AddPlanet(-600, 0, 0, -1, 0.05);
+        //AddPlanet(-72, 0, 0, 1, 1);
+        //AddPlanet(72, 0, 0, -2, 0.5);
+        //AddPlanet(-216, 0, 0, 2, 0.5);
     }
     std::vector<sf::Sprite> DrawSolarSystem()
     {
