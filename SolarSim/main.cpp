@@ -2,16 +2,14 @@
 #include "imgui.h"
 #include "imgui-SFML.h"
 
-#include "absl/container/flat_hash_map.h"
-
 #include <string>
 #include <iostream>
 #include <experimental/filesystem>
 
-#include <mmintrin.h>
-#include <xmmintrin.h>
+#include <immintrin.h>
 
 #include <sstream>
+#include <thread>
 
 namespace fs = std::experimental::filesystem;
 namespace std {
@@ -35,6 +33,7 @@ __m128 gravity = _mm_broadcast_ss(&G);
 __m128 merge_r = _mm_broadcast_ss(&m_r);
 int selectedPlanet = 1;
 bool gotoSelected = false;
+bool merging = true;
 sf::Vector2f camPos = { 0.f,0.f };
 
 struct Planet {
@@ -43,6 +42,8 @@ struct Planet {
     float* y;
     float* dx;
     float* dy;
+    float* Fx;
+    float* Fy;
     float* mass;
     float* r;
 };
@@ -53,7 +54,6 @@ struct PlanetOption {
     operator bool() { return valid; }
     operator Planet() { return planet; }
 };
-
 
 struct PlanetGroup {
     union {
@@ -75,6 +75,14 @@ struct PlanetGroup {
     union {
         float dy[groupSize] = {};
         __m128 m_dy;
+    };
+    union {
+        float Fx[groupSize] = {};
+        __m128 m_Fx;
+    };
+    union {
+        float Fy[groupSize] = {};
+        __m128 m_Fy;
     };
     union {
         float mass[groupSize] = {};
@@ -102,6 +110,8 @@ public:
         group->y   [index] = y;
         group->dx  [index] = dx;
         group->dy  [index] = dy;
+        group->Fx  [index] = 0.f;
+        group->Fy  [index] = 0.f;
         group->mass[index] = mass;
         group->r   [index] = sqrt(mass / pi) * 128.f;
         planetsLength++;
@@ -119,6 +129,8 @@ public:
                 &group->y[index],
                 &group->dx[index],
                 &group->dy[index],
+                &group->Fx[index],
+                &group->Fy[index],
                 &group->mass[index],
                 &group->r[index]
             };
@@ -146,6 +158,8 @@ public:
                 group->y[index]     = *lastPlanet.y;
                 group->dx[index]    = *lastPlanet.dx;
                 group->dy[index]    = *lastPlanet.dy;
+                group->Fx[index]    = *lastPlanet.Fx;
+                group->Fy[index]    = *lastPlanet.Fy;
                 group->mass[index]  = *lastPlanet.mass;
                 group->r[index]     = *lastPlanet.r;
             }
@@ -157,6 +171,8 @@ public:
             lastGroup->y[lastIndex] = 0.f;
             lastGroup->dx[lastIndex] = 0.f;
             lastGroup->dy[lastIndex] = 0.f;
+            lastGroup->Fx[lastIndex] = 0.f;
+            lastGroup->Fy[lastIndex] = 0.f;
             lastGroup->mass[lastIndex] = 0.f;
             lastGroup->r[lastIndex] = 0.f;
             planetsLength--;
@@ -276,14 +292,11 @@ public:
         // F = ma
         // a = m / F;
         // a = m / ((G * m * m2) / r^2)
-        
         for (int i = 1; i <= planetsLength; i++)
         {
             if (PlanetOption tempA = GetPlanet(i))
             {
                 Planet planetA = tempA;
-                float Fx = 0;
-                float Fy = 0;
                 for (int j = 1; j <= planetsLength; j++)
                 {
                     if (PlanetOption tempB = GetPlanet(j))
@@ -293,11 +306,11 @@ public:
                         {
                             float rx = ((*planetB.x) - (*planetA.x));
                             float ry = ((*planetB.y) - (*planetA.y));
-                            float r2 = pow(rx,2) + pow(ry,2);
+                            float r2 = pow(rx, 2) + pow(ry, 2);
 
                             // Check if planets merge
-                            float mass_r2 = pow(((*planetA.r + *planetB.r) * m_r),2);
-                            if (r2 < mass_r2)
+                            float mass_r2 = pow(((*planetA.r + *planetB.r) * m_r), 2);
+                            if (merging && r2 < mass_r2)
                             {
                                 MergePlanets(i, j);
                                 // Recalculate planet As forces since its mass changed
@@ -305,17 +318,140 @@ public:
                                 goto skip_calc;
                             }
                             float F = (G * (*planetA.mass) * (*planetB.mass)) / r2;
-                            Fx += F * rx;
-                            Fy += F * ry;
+                            *planetA.Fx += F * rx;
+                            *planetA.Fy += F * ry;
                         }
                     }
                 }
-                *planetA.dx += Fx / (*planetA.mass);
-                *planetA.dy += Fy / (*planetA.mass);
-                *planetA.x += *planetA.dx;
-                *planetA.y += *planetA.dy;
-
             skip_calc:;
+            }
+        }
+    }
+    void MergeAllPlanets(const int start, const int end)
+    {
+        int start2 = (start - 1) / groupSize;
+        int end2 = end / groupSize;
+        for (int i = start2; i < end2; i++)
+        {
+            PlanetGroup* groupA = &planets[i];
+            for (int j = 0; j < groupSize; j++)
+            {
+                if (groupA->id[j] != 0)
+                {
+                    for (int k = 0; k < planetsLength / groupSize; k++)
+                    {
+                        PlanetGroup* groupB = &planets[k];
+                        for (int l = 0; l < groupSize; l++)
+                        {
+                            if (groupB->id[l] != 0 && groupA->id[j] != groupB->id[l])
+                            {
+                                float rx = ((groupB->x[l]) - groupA->x[j]);
+                                float ry = ((groupB->y[l]) - groupA->y[j]);
+                                float r2 = (rx * rx) + (ry * ry);
+                                // Check if planets merge
+                                float mass_r2 = ((groupA->r[j] + groupB->r[l]) * m_r) * ((groupA->r[j] + groupB->r[l]) * m_r);
+                                if (r2 < mass_r2)
+                                {
+                                    MergePlanets(groupA->id[j], groupB->id[l]);
+                                    j--;
+                                    goto skip_grouped;
+                                }
+                            }
+                        }
+                    }
+                }
+            skip_grouped:;
+            }
+        }
+    }
+    void UpdateThreadFast(const int start, const int end)
+    {
+        // F = (G * m1 * m2) / r^2
+        // F = ma
+        // a = m / F;
+        // a = m / ((G * m * m2) / r^2)
+        for (int i = start; i < end; i++)
+        {
+            PlanetGroup* groupA = &planets[i];
+            for (int j = 0; j < groupSize; j++)
+            {
+                if (groupA->id[j] != 0)
+                {
+                    for (int k = 0; k < planets.size(); k++)
+                    {
+                        PlanetGroup* groupB = &planets[k];
+                        for (int l = 0; l < groupSize; l++)
+                        {
+                            if (groupB->id[l] != 0 && groupA->id[j] != groupB->id[l])
+                            {
+                                float rx = groupB->x[l] - groupA->x[j];
+                                float ry = groupB->y[l] - groupA->y[j];
+                                float r2 = (rx * rx) + (ry * ry);
+                                float F = (G * (groupA->mass[j]) * groupB->mass[j]) / r2;
+                                groupA->Fx[j] += F * rx;
+                                groupA->Fy[j] += F * ry;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    void ThreadedUpdatePlanets()
+    {
+        // I don't think this can be multithreaded since it relies on removing elements being thread safe... 
+        // which is obvious why it wouldn't be
+        if(merging)
+            MergeAllPlanets(1, planetsLength);
+
+        /*
+        const int NUM_THREADS = 4;
+        int block_size  = (planetsLength / groupSize) / NUM_THREADS + 1;
+        int block = 0;
+
+        std::thread t1([&](static SolarSystem* system, int start, int end) {system->UpdateThreadFast(start, end); }, this, block * block_size, (block + 1) * block_size);
+        block++;
+        std::thread t2([&](static SolarSystem* system, int start, int end) {system->UpdateThreadFast(start, end); }, this, block * block_size, (block + 1) * block_size);
+        block++;
+        std::thread t3([&](static SolarSystem* system, int start, int end) {system->UpdateThreadFast(start, end); }, this, block * block_size, (block + 1) * block_size);
+        block++;
+        std::thread t4([&](static SolarSystem* system, int start, int end) {system->UpdateThreadFast(start, end); }, this, block * block_size, (block + 1) * block_size);
+        t1.join();
+        t2.join();
+        t3.join();
+        t4.join();
+        */
+
+        // Seems like threads don't like to be moved or recreated
+        std::vector<std::thread> threads;
+        const int NUM_THREADS = 3;
+        int block_size = (planetsLength / groupSize) / NUM_THREADS + 1;
+        for (int i = 0; i < NUM_THREADS; i++)
+        {
+            threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                system->UpdateThreadFast(start, end);
+                }, this, i * block_size, (i + 1) * block_size));
+        }
+        for (int i = 0; i < NUM_THREADS; i++)
+        {
+            threads[i].join();
+        }
+
+        // Separate applying forces and velocity since it's O(n)
+        for (int i = 0; i < planetsLength / groupSize + 1; i++)
+        {
+            PlanetGroup* groupA = &planets[i];
+            for (int j = 0; j < groupSize; j++)
+            {
+                if (groupA->id[j] != 0)
+                {
+                    groupA->dx[j] += groupA->Fx[j] / groupA->mass[j];
+                    groupA->dy[j] += groupA->Fy[j] / groupA->mass[j];
+                    groupA->x[j] += groupA->dx[j];
+                    groupA->y[j] += groupA->dy[j];
+                    groupA->Fx[j] = 0.f;
+                    groupA->Fy[j] = 0.f;
+                }
             }
         }
     }
@@ -451,10 +587,11 @@ int main()
     uint8_t pressed = 0;
 
     const float minZoom = 0.5;
-    const float maxZoom = 128.f;
-    int tiers = 3;
-    int children = 7;
-    bool multi_threaded = false;
+    const float maxZoom = 256.f;
+    int tiers = 4;
+    int children = 6;
+    bool multi_threaded = true;
+    bool static_framerate = true;
     
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     SolarSystem system;
@@ -547,7 +684,7 @@ int main()
                 if (outer % 3 == 0 && outer != 0)
                     iter = operations.insert(iter, ',');
             }
-            if (operations[operations.length() - outer - 1] == '.')
+            else if (operations[operations.length() - outer - 1] == '.')
             {
                 decimal = true;
                 outer = -1;
@@ -558,6 +695,15 @@ int main()
         ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
         ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
         ImGui::Checkbox(" :PARALLEL", &multi_threaded);
+        ImGui::Checkbox(" :Lock Framerate", &static_framerate);
+        ImGui::Checkbox(" :Planet Merging", &merging);
+        if (static_framerate)
+        {
+            if (updatesPerFrame > 1 && frameRate < 50.f)
+                updatesPerFrame--;
+            else if (updatesPerFrame < 50 && frameRate > 55.f)
+                updatesPerFrame++;
+        }
         ImGui::End();
         frameClock.restart();
 
@@ -582,6 +728,7 @@ int main()
             ImGui::SliderFloat(": ZOOM", &zoom, minZoom, maxZoom);
             ImGui::SliderInt(": Tiers",    &tiers,    1, 4);
             ImGui::SliderInt(": Children", &children, 1, 10);
+            ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
             if (ImGui::Button("Remove Planet"))
             {
                 system.RemovePlanet(selectedPlanet);
@@ -603,12 +750,12 @@ int main()
         }
         if (!ImGui::IsAnyWindowFocused())
         {
-            if (multi_threaded)
-                for (int i = 0; i < updatesPerFrame; i++)
-                    system.UpdatePlanetsGrouped();
-            else
+            if (!multi_threaded)
                 for (int i = 0; i < updatesPerFrame; i++)
                     system.UpdatePlanets();
+            else
+                for (int i = 0; i < updatesPerFrame; i++)
+                    system.ThreadedUpdatePlanets();
         }
 
         ImGui::End();
