@@ -1,25 +1,41 @@
+#include <SFML/Graphics.hpp>
 #include "imgui.h"
 #include "imgui-SFML.h"
 
 #include "absl/container/flat_hash_map.h"
 
-#include <SFML/Graphics.hpp>
 #include <string>
 #include <iostream>
 #include <experimental/filesystem>
+
 #include <mmintrin.h>
 #include <xmmintrin.h>
-//#include "FastNoiseSIMD.h"
+
+#include <sstream>
+
 namespace fs = std::experimental::filesystem;
+namespace std {
+    template <typename T>
+    string to_string_with_precision(const T a_value, const int n = 2)
+    {
+        ostringstream out;
+        out.precision(n);
+        out << fixed << a_value;
+        return out.str();
+    }
+}
 
 sf::Texture circle;
 const int groupSize = 4;
-double pi = 2 * acos(0.0);
-const float G = 10;
+const double pi = 2 * acos(0.0);
+float G = 4.f;
 const float zero = 0.f;
 const float m_r = 0.5f;
 __m128 gravity = _mm_broadcast_ss(&G);
 __m128 merge_r = _mm_broadcast_ss(&m_r);
+int selectedPlanet = 1;
+bool gotoSelected = false;
+sf::Vector2f camPos = { 0.f,0.f };
 
 struct Planet {
     int* id;
@@ -152,31 +168,43 @@ public:
             Planet parent = temp;
             const int angles = (360 * 8);
             const int steps = 1000;
-            const float min_dis = 200.f;
-            const float max_dis = 1000.f;
+            const float min_dis = 500.f;
+            const float max_dis = 10000.f;
             const float dif_dis = max_dis - min_dis;
-            float angle = float(rand() % angles) / float(angles);
-            float magni = min_dis + float(rand() % steps) / float(steps) * dif_dis;
-            float new_x = cos(angle * 2.f * pi) * magni;
-            float new_y = sin(angle * 2.f * pi) * magni;
-            float new_dx;
-            float new_dy;
-            if (rand() & 1)
-            {
-                new_dx = cos(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
-                new_dy = sin(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
-            }
-            else
-            {
-                new_dx = cos(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
-                new_dy = sin(angle * 2.f * pi + pi * 0.5f) * 2000.f / magni;
-            }
             const float min_prop = 0.05;
             const float max_prop = 0.5f;
             const float dif_prop = max_prop - min_prop;
             const int   mas_step = 1000;
-            float new_mass = min_prop + float(rand() % mas_step) / mas_step * dif_prop;
-            AddPlanet((*parent.x) + new_x, (*parent.y) + new_y, (*parent.dx) * new_mass + new_dx, (*parent.dy) * new_mass + new_dy, new_mass * (*parent.mass));
+            float new_mass = min_prop + float(rand() % mas_step) / mas_step * dif_prop * (*parent.mass);
+            float angle = float(rand() % angles) / float(angles);
+            float magni = (min_dis + float(rand() % steps) / float(steps) * dif_dis) * (*parent.mass);
+            float new_x = (*parent.x) + cos(angle * 2.f * pi) * magni;
+            float new_y = (*parent.y) + sin(angle * 2.f * pi) * magni;
+            float new_dx;
+            float new_dy;
+            if (rand() & 1)
+            {
+                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * 2.f;
+                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * 2.f;
+            }
+            else
+            {
+                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * 2.f;
+                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * 2.f;
+            }
+            
+            AddPlanet(new_x, new_y, new_dx, new_dy, new_mass);
+        }
+    }
+    // Parent, children per call, recursion depth
+    void RecursivelyAddPlanets(int parent, int n, int m)
+    {
+        if (m == 0)
+            return;
+        for (int i = 0; i < n; i++)
+        {
+            AddRandomSatellite(parent);
+            RecursivelyAddPlanets(planetsLength, n, m-1);
         }
     }
     SolarSystem()
@@ -201,6 +229,11 @@ public:
                 sprite.setTexture(circle);
                 sprite.setOrigin(128, 128);
                 sprite.setPosition(*planet.x, *planet.y);
+                if (i == selectedPlanet)
+                {
+                    if (gotoSelected)
+                        camPos = { *planet.x, *planet.y };
+                }
                 sprite.setScale(*planet.r / 128.f, *planet.r / 128.f);
                 sprites.emplace_back(sprite);
             }
@@ -209,6 +242,12 @@ public:
     }
     void MergePlanets(int idA, int idB)
     {
+        if (idA > idB)
+        {
+            int temp = idA;
+            idA = idB;
+            idB = temp;
+        }
         assert(idA != idB);
         if (PlanetOption tempA = GetPlanet(idA))
         {
@@ -224,8 +263,9 @@ public:
                 *planetA.dy = ((*planetA.dy) * (*planetA.mass) + *planetB.dy * *planetB.mass) / total_mass;
                 *planetA.mass = total_mass;
                 *planetA.r = sqrt(total_mass / pi) * 128.f;
+                if (idB == selectedPlanet)
+                    selectedPlanet = idA;
                 // Remove planet B
-                // Recalculate planet As forces since its mass changed
                 RemovePlanet(idB);
             }
         }
@@ -260,6 +300,7 @@ public:
                             if (r2 < mass_r2)
                             {
                                 MergePlanets(i, j);
+                                // Recalculate planet As forces since its mass changed
                                 i--;
                                 goto skip_calc;
                             }
@@ -282,7 +323,6 @@ public:
     {
         for (int i = 1; i <= planetsLength; i++)
         {
-            int j = 0;
             if (PlanetOption tempA = GetPlanet(i))
             {
                 Planet planetA = tempA;
@@ -299,15 +339,18 @@ public:
                 };
                 __m128 planetA_mass = _mm_broadcast_ss(planetA.mass);
                 __m128 planetA_r = _mm_broadcast_ss(planetA.r);
-                float planet_id = *planetA.id;
+                int planet_id = *planetA.id;
 
-                for (PlanetGroup group : planets)
+                for (int j=0;j<planets.size();j++)
                 {
+                    PlanetGroup group = planets[j];
                     // Subtract planet As position from groups positions to find relative distance
-                    __m128 rx = _mm_sub_ps(group.m_x, planetA_x);
-                    __m128 ry = _mm_sub_ps(group.m_y, planetA_y);
                     // Find the square of each distance
+                    // Code readibility may suffer due to functions not being optimized such that
+                    // Simd vectors aren't being stored in registers properly and may be passed to cache or stack preemtively
+                    __m128 rx = _mm_sub_ps(group.m_x, planetA_x);
                     __m128 rx2 = _mm_mul_ps(rx, rx);
+                    __m128 ry = _mm_sub_ps(group.m_y, planetA_y);
                     __m128 ry2 = _mm_mul_ps(ry, ry);
                     // Find the radius squared
                     union {
@@ -330,6 +373,7 @@ public:
                         if (group.id[k] != 0 && planet_id != group.id[k] && i_r2[k] < total_mass_r2[k])
                         {
                             MergePlanets(i, j * groupSize + k + 1);
+                            // Recalculate planet As forces since its mass changed
                             i--;
                             goto skip_group_calc;
                         }
@@ -353,10 +397,11 @@ public:
                     // Remove nan values such as planets affecting themselves
                     for (int k = 0; k < groupSize; k++)
                     {
-                        if (isnan(F_x[k]))
+                        if (group.id[k] == 0 || group.id[k] == planet_id)
+                        {
                             F_x[k] = 0;
-                        if (isnan(F_y[k]))
                             F_y[k] = 0;
+                        }
                     }
                     // Apply the forces 
                     mplanetA_Fx = _mm_add_ps(mplanetA_Fx, Fx);
@@ -369,7 +414,6 @@ public:
                 }
                 *planetA.x += *planetA.dx;
                 *planetA.y += *planetA.dy;
-                j++;
             }
         skip_group_calc:;
         }
@@ -397,19 +441,52 @@ int main()
     centreView.setCenter(0, 0);
     float prevZoom = 1.f;
     float zoom = 1.f;
+    sf::Vector2f prevCamPos = { 0.f,0.f };
 
     circle.loadFromFile("circle.png");
-    int selectedPlanet = 1;
+    uint8_t KEYW = 1;
+    uint8_t KEYS = 2;
+    uint8_t KEYA = 4;
+    uint8_t KEYD = 8;
+    uint8_t pressed = 0;
 
+    const float minZoom = 0.5;
+    const float maxZoom = 128.f;
+    int tiers = 3;
+    int children = 7;
+    bool multi_threaded = false;
+    
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     SolarSystem system;
+    system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
 
     while (window.isOpen()) {
         sf::Event event;
         while (window.pollEvent(event)) {
             ImGui::SFML::ProcessEvent(event);
-
-            if (event.type == sf::Event::Resized)
+            if (event.type == sf::Event::KeyPressed)
+            {
+                if (event.key.code == sf::Keyboard::W)
+                    pressed |= KEYW;
+                else if (event.key.code == sf::Keyboard::S)
+                    pressed |= KEYS;
+                else if (event.key.code == sf::Keyboard::A)
+                    pressed |= KEYA;
+                else if (event.key.code == sf::Keyboard::D)
+                    pressed |= KEYD;
+            }
+            else if (event.type == sf::Event::KeyReleased)
+            {
+                if (event.key.code == sf::Keyboard::W)
+                    pressed &= (0xff ^ KEYW);
+                else if (event.key.code == sf::Keyboard::S)
+                    pressed &= (0xff ^ KEYS);
+                else if (event.key.code == sf::Keyboard::A)
+                    pressed &= (0xff ^ KEYA);
+                else if (event.key.code == sf::Keyboard::D)
+                    pressed &= (0xff ^ KEYD);
+            }
+            else if (event.type == sf::Event::Resized)
             {
                 sf::Vector2u size = window.getSize();
                 centreView.setSize(sf::Vector2f(size.x, size.y));
@@ -419,8 +496,6 @@ int main()
             {
                 if (event.mouseWheelScroll.delta != 0)
                 {
-                    const float minZoom = 0.5;
-                    const float maxZoom = 64.f;
                     zoom -= event.mouseWheelScroll.delta * 1.f;
                     if (zoom < minZoom)
                         zoom = minZoom;
@@ -432,21 +507,57 @@ int main()
                 window.close();
             }
         }
+        const float move_speed = 5.f;
+        for (int i = 0; i < 4; i++)
+        {
+            if ((pressed >> i) & 1)
+            {
+                if (i < 2)
+                    camPos.y += move_speed * zoom * ((i & 1) ? 1.f : -1.f);
+                else
+                    camPos.x += move_speed * zoom * ((i & 1) ? 1.f : -1.f);
+            }
+        }
         if (prevZoom != zoom)
         {
-            centreView.zoom(zoom / prevZoom);
+            centreView.zoom(pow(zoom / prevZoom,2));
             prevZoom = zoom;
+        }
+        if (prevCamPos != camPos)
+        {
+            centreView.move(camPos - prevCamPos);
+            prevCamPos = camPos;
         }
         window.setView(centreView);
         window.clear();
         ImGui::SFML::Update(window, deltaClock.restart());
 
         ImGui::Begin("Update Rate");
-        int frameRate = 1000000 / frameClock.getElapsedTime().asMicroseconds();
-        static int updatesPerFrame = 1;
-        ImGui::Text(std::string("FPS: "+std::to_string(frameRate)).c_str());
-        ImGui::Text(std::string("UPS: " + std::to_string(frameRate * updatesPerFrame)).c_str());
-        ImGui::SliderInt(" :Updates Per Frame", &updatesPerFrame, 1, 20);
+        float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
+        static int updatesPerFrame = 50;
+        ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
+        ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
+        std::string operations = std::to_string_with_precision(frameRate * float(updatesPerFrame * system.planetsLength * system.planetsLength));
+        int outer = 0;
+        bool decimal = false;
+        for (auto iter = operations.end(); iter > operations.begin();iter--)
+        {
+            if (decimal)
+            {
+                if (outer % 3 == 0 && outer != 0)
+                    iter = operations.insert(iter, ',');
+            }
+            if (operations[operations.length() - outer - 1] == '.')
+            {
+                decimal = true;
+                outer = -1;
+            }
+            outer++;
+        }
+        ImGui::Text(std::string("OPS:     " + operations).c_str());
+        ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
+        ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
+        ImGui::Checkbox(" :PARALLEL", &multi_threaded);
         ImGui::End();
         frameClock.restart();
 
@@ -464,6 +575,17 @@ int main()
             ImGui::SliderFloat(": DX", planet.dx,   dmin, dmax);
             ImGui::SliderFloat(": DY", planet.dy,   dmin, dmax);
             ImGui::SliderFloat(": M",  planet.mass, 0.0001, 10,"%.3f",2.f);
+            if (ImGui::SliderFloat(": G", &G, 0.1, 10))
+            {
+                gravity = _mm_broadcast_ss(&G);
+            }
+            ImGui::SliderFloat(": ZOOM", &zoom, minZoom, maxZoom);
+            ImGui::SliderInt(": Tiers",    &tiers,    1, 4);
+            ImGui::SliderInt(": Children", &children, 1, 10);
+            if (ImGui::Button("Remove Planet"))
+            {
+                system.RemovePlanet(selectedPlanet);
+            }
             if (ImGui::Button("Add Planet"))
             {
                 system.AddPlanet(smin, smin, 0, 0, 0.5);
@@ -473,14 +595,20 @@ int main()
             {
                 system.AddRandomSatellite(selectedPlanet);
             }
-        }
-        if (!ImGui::IsWindowFocused())
-        {
-            for (int i = 0; i < updatesPerFrame; i++)
+            if (ImGui::Button("Add Universe"))
             {
-                system.UpdatePlanets();
-                //system.UpdatePlanetsGrouped();
+                system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
             }
+            ImGui::Checkbox(": Follow Selected", &gotoSelected);
+        }
+        if (!ImGui::IsAnyWindowFocused())
+        {
+            if (multi_threaded)
+                for (int i = 0; i < updatesPerFrame; i++)
+                    system.UpdatePlanetsGrouped();
+            else
+                for (int i = 0; i < updatesPerFrame; i++)
+                    system.UpdatePlanets();
         }
 
         ImGui::End();
