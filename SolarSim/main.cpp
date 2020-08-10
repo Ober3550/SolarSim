@@ -29,10 +29,12 @@ const double pi = 2 * acos(0.0);
 float G = 4.f;
 const float zero = 0.f;
 const float m_r = 0.5f;
-__m256 gravity   = _mm256_set1_ps(G);
+
 __m256 merge_r   = _mm256_set1_ps(m_r);
 __m256i m_zeroi  = _mm256_set1_epi32(0);
 __m256i m_onesi  = _mm256_set1_epi32(uint32_t(-1));
+__m256 gravity = _mm256_set1_ps(G);
+
 int selectedPlanet = 1;
 bool gotoSelected = false;
 bool merging = false;
@@ -42,8 +44,8 @@ sf::Vector2f camPos = { 0.f,0.f };
 
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
-int tiers = 3;
-int children = 20;
+int tiers = 1;
+int children = 1;
 bool static_framerate = true;
 
 struct Planet {
@@ -208,15 +210,16 @@ public:
             float new_y = (*parent.y) + sin(angle * 2.f * pi) * magni;
             float new_dx;
             float new_dy;
+            const float scalar = sqrt(G*(*parent.mass)/sqrt(magni));
             if (rand() & 1)
             {
-                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * 2.f;
-                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * 2.f;
+                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * scalar;
+                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * scalar;
             }
             else
             {
-                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * 2.f;
-                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * 2.f;
+                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * scalar;
+                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * scalar;
             }
             
             AddPlanet(new_x, new_y, new_dx, new_dy, new_mass);
@@ -239,7 +242,7 @@ public:
         //AddPlanet(200, 0, 0, 1, 0.5);
         //AddPlanet(600, 0, 0, 1, 0.05);
         //AddPlanet(-600, 0, 0, -1, 0.05);
-        AddPlanet(0, 0, 0, 0, 1);
+        AddPlanet(0, 0, 0, 0, 10);
         //AddPlanet(72, 0, 0, -2, 0.5);
         //AddPlanet(-216, 0, 0, 2, 0.5);
     }
@@ -296,47 +299,6 @@ public:
             }
         }
     }
-    void UpdatePlanets()
-    {
-        // F = (G * m1 * m2) / r^2
-        // F = ma
-        // a = m / F;
-        // a = m / ((G * m * m2) / r^2)
-        for (int i = 1; i <= planetsLength; i++)
-        {
-            if (PlanetOption tempA = GetPlanet(i))
-            {
-                Planet planetA = tempA;
-                for (int j = 1; j <= planetsLength; j++)
-                {
-                    if (PlanetOption tempB = GetPlanet(j))
-                    {
-                        Planet planetB = tempB;
-                        if (*planetA.id != *planetB.id)
-                        {
-                            float rx = ((*planetB.x) - (*planetA.x));
-                            float ry = ((*planetB.y) - (*planetA.y));
-                            float r2 = pow(rx, 2) + pow(ry, 2);
-
-                            // Check if planets merge
-                            float mass_r2 = pow(((*planetA.r + *planetB.r) * m_r), 2);
-                            if (merging && r2 < mass_r2)
-                            {
-                                MergePlanets(i, j);
-                                // Recalculate planet As forces since its mass changed
-                                i--;
-                                goto skip_calc;
-                            }
-                            float F = (G * (*planetA.mass) * (*planetB.mass)) / r2;
-                            *planetA.Fx += F * rx;
-                            *planetA.Fy += F * ry;
-                        }
-                    }
-                }
-            skip_calc:;
-            }
-        }
-    }
     void MergeAllPlanets(const int start, const int end)
     {
         int start2 = (start - 1) / VECWIDTH;
@@ -364,13 +326,61 @@ public:
                                 {
                                     MergePlanets(groupA->id[j], groupB->id[l]);
                                     j--;
-                                    goto skip_grouped;
+                                    goto check_again;
                                 }
                             }
                         }
                     }
                 }
-            skip_grouped:;
+            check_again:;
+            }
+        }
+    }
+    void UpdatePlanets()
+    {
+        // F = (G * m1 * m2) / r^2
+        // F = ma
+        // a = m / F;
+        // a = m / ((G * m * m2) / r^2)
+        MergeAllPlanets(1, planetsLength);
+        for (int i = 1; i <= planetsLength; i++)
+        {
+            if (PlanetOption tempA = GetPlanet(i))
+            {
+                Planet planetA = tempA;
+                for (int j = 1; j <= planetsLength; j++)
+                {
+                    if (PlanetOption tempB = GetPlanet(j))
+                    {
+                        Planet planetB = tempB;
+                        if (*planetA.id != *planetB.id)
+                        {
+                            float rx = ((*planetB.x) - (*planetA.x));
+                            float ry = ((*planetB.y) - (*planetA.y));
+                            float r2 = pow(rx, 2) + pow(ry, 2);
+                            float F = (G * (*planetA.mass) * (*planetB.mass)) / r2;
+                            *planetA.Fx += F * rx;
+                            *planetA.Fy += F * ry;
+                        }
+                    }
+                }
+            }
+        }
+        // Separate applying forces and velocity since it's O(n)
+        for (int i = 0; i < planetsLength / VECWIDTH + 1; i++)
+        {
+            PlanetGroup* groupA = &planets[i];
+            for (int j = 0; j < VECWIDTH; j++)
+            {
+                if (groupA->id[j] != 0)
+                {
+                    groupA->dx[j] += groupA->Fx[j] / groupA->mass[j];
+                    groupA->dy[j] += groupA->Fy[j] / groupA->mass[j];
+                    groupA->x[j] += groupA->dx[j];
+                    groupA->y[j] += groupA->dy[j];
+                    groupA->Fx[j] = 0.f;
+                    groupA->Fy[j] = 0.f;
+                }
             }
         }
     }
@@ -490,41 +500,46 @@ public:
         // Seems like threads don't like to be moved or recreated
         std::vector<std::thread> threads;
         const int NUM_THREADS = 4;
-        int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
-        for (int i = 0; i < NUM_THREADS; i++)
+        if (planetsLength < 1000)
+            UpdatePlanetsSimd();
+        else
         {
-            if (simd)
+            int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
+            for (int i = 0; i < NUM_THREADS; i++)
             {
-                threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
-                    system->SimdThreaded(start, end);
-                    }, this, i * block_size, (i + 1) * block_size));
-            }
-            else
-            {
-                threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
-                    system->Threaded(start, end);
-                    }, this, i * block_size, (i + 1) * block_size));
-            }
-        }
-        for (int i = 0; i < NUM_THREADS; i++)
-        {
-            threads[i].join();
-        }
-
-        // Separate applying forces and velocity since it's O(n)
-        for (int i = 0; i < planetsLength / VECWIDTH + 1; i++)
-        {
-            PlanetGroup* groupA = &planets[i];
-            for (int j = 0; j < VECWIDTH; j++)
-            {
-                if (groupA->id[j] != 0)
+                if (simd)
                 {
-                    groupA->dx[j] += groupA->Fx[j] / groupA->mass[j];
-                    groupA->dy[j] += groupA->Fy[j] / groupA->mass[j];
-                    groupA->x[j] += groupA->dx[j];
-                    groupA->y[j] += groupA->dy[j];
-                    groupA->Fx[j] = 0.f;
-                    groupA->Fy[j] = 0.f;
+                    threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                        system->SimdThreaded(start, end);
+                        }, this, i * block_size, (i + 1) * block_size));
+                }
+                else
+                {
+                    threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                        system->Threaded(start, end);
+                        }, this, i * block_size, (i + 1) * block_size));
+                }
+            }
+            for (int i = 0; i < NUM_THREADS; i++)
+            {
+                threads[i].join();
+            }
+
+            // Separate applying forces and velocity since it's O(n)
+            for (int i = 0; i < planetsLength / VECWIDTH + 1; i++)
+            {
+                PlanetGroup* groupA = &planets[i];
+                for (int j = 0; j < VECWIDTH; j++)
+                {
+                    if (groupA->id[j] != 0)
+                    {
+                        groupA->dx[j] += groupA->Fx[j] / groupA->mass[j];
+                        groupA->dy[j] += groupA->Fy[j] / groupA->mass[j];
+                        groupA->x[j] += groupA->dx[j];
+                        groupA->y[j] += groupA->dy[j];
+                        groupA->Fx[j] = 0.f;
+                        groupA->Fy[j] = 0.f;
+                    }
                 }
             }
         }
@@ -649,6 +664,7 @@ int main()
     float prevZoom = 1.f;
     float zoom = 1.f;
     sf::Vector2f prevCamPos = { 0.f,0.f };
+    sf::Vector2f mousePos = { 0.f,0.f };
 
     circle.loadFromFile("circle.png");
     uint8_t KEYW = 1;
@@ -687,11 +703,17 @@ int main()
                 else if (event.key.code == sf::Keyboard::D)
                     pressed &= (0xff ^ KEYD);
             }
+            else if (event.type == sf::Event::MouseMoved)
+            {
+                mousePos = sf::Vector2f(event.mouseMove.x - float(size.x)/2, event.mouseMove.y - float(size.y)/2);
+            }
             else if (event.type == sf::Event::Resized)
             {
-                sf::Vector2u size = window.getSize();
+                size = window.getSize();
                 centreView.setSize(sf::Vector2f(size.x, size.y));
                 centreView.setCenter(0, 0);
+                prevZoom = 1.f;
+                zoom = 1.f;
             }
             else if (event.type == sf::Event::MouseWheelScrolled)
             {
@@ -721,6 +743,8 @@ int main()
         }
         if (prevZoom != zoom)
         {
+            if (zoom < prevZoom)
+                camPos += (mousePos * prevZoom * 2.f * (prevZoom/zoom));
             centreView.zoom(pow(zoom / prevZoom,2));
             prevZoom = zoom;
         }
@@ -762,6 +786,9 @@ int main()
         ImGui::Checkbox(" :Simd", &simd);
         ImGui::Checkbox(" :Lock Framerate", &static_framerate);
         ImGui::Checkbox(" :Planet Merging", &merging);
+        ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
+        ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
+        ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
         ImGui::End();
         frameClock.restart();
 
@@ -783,7 +810,6 @@ int main()
             {
                 gravity = _mm256_set1_ps(G);
             }
-            ImGui::SliderFloat(": ZOOM", &zoom, minZoom, maxZoom);
             ImGui::SliderInt(": Tiers",    &tiers,    1, 4);
             ImGui::SliderInt(": Children", &children, 1, 10);
             ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
