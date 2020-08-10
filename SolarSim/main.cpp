@@ -44,8 +44,8 @@ sf::Vector2f camPos = { 0.f,0.f };
 
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
-int tiers = 1;
-int children = 1;
+int tiers = 3;
+int children = 20;
 bool static_framerate = true;
 
 struct Planet {
@@ -196,31 +196,33 @@ public:
             Planet parent = temp;
             const int angles = (360 * 8);
             const int steps = 1000;
-            const float min_dis = 500.f;
-            const float max_dis = 10000.f;
+            const float min_dis = 5.f;
+            const float max_dis = 100.f;
             const float dif_dis = max_dis - min_dis;
-            const float min_prop = 0.05;
-            const float max_prop = 0.5f;
+            const float min_prop = 0.005;
+            const float max_prop = 0.05f;
             const float dif_prop = max_prop - min_prop;
             const int   mas_step = 1000;
             float new_mass = min_prop + float(rand() % mas_step) / mas_step * dif_prop * (*parent.mass);
             float angle = float(rand() % angles) / float(angles);
-            float magni = (min_dis + float(rand() % steps) / float(steps) * dif_dis) * (*parent.mass);
-            float new_x = (*parent.x) + cos(angle * 2.f * pi) * magni;
-            float new_y = (*parent.y) + sin(angle * 2.f * pi) * magni;
+            angle *= 2.f * pi;
+            float magni = (*parent.r) + (*parent.mass) * (min_dis + float(rand() % steps) / float(steps) * dif_dis);
+            float new_x = (*parent.x) + cos(angle) * magni;
+            float new_y = (*parent.y) + sin(angle) * magni;
             float new_dx;
             float new_dy;
-            const float scalar = sqrt(G*(*parent.mass)/sqrt(magni));
-            if (rand() & 1)
+            float scalar = sqrt(G*((*parent.mass) + new_mass) / magni*magni);
+            new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
+            new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
+            /*if (rand() & 1)
             {
-                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * scalar;
-                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * scalar;
+                
             }
             else
             {
-                new_dx = (*parent.dx) + cos(angle * 2.f * pi + pi * 0.5f) * scalar;
-                new_dy = (*parent.dy) + sin(angle * 2.f * pi + pi * 0.5f) * scalar;
-            }
+                new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
+                new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
+            }*/
             
             AddPlanet(new_x, new_y, new_dx, new_dy, new_mass);
         }
@@ -242,7 +244,7 @@ public:
         //AddPlanet(200, 0, 0, 1, 0.5);
         //AddPlanet(600, 0, 0, 1, 0.05);
         //AddPlanet(-600, 0, 0, -1, 0.05);
-        AddPlanet(0, 0, 0, 0, 10);
+        AddPlanet(0, 0, 0, 0, 1000);
         //AddPlanet(72, 0, 0, -2, 0.5);
         //AddPlanet(-216, 0, 0, 2, 0.5);
     }
