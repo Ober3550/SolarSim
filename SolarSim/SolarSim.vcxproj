@@ -135,7 +135,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(SolutionDir)Agui\Agui\include;$(SolutionDir)SFML-2.5.1\include;$(SolutionDir);$(SolutionDir)FastNoise;$(SolutionDir)abseil-cpp-master;$(SolutionName)/SFML-2.5.1-64/include;$(SolutionDir)imgui-master;$(SolutionDir)imgui-sfml-master;</AdditionalIncludeDirectories>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
-      <Optimization>Disabled</Optimization>
+      <Optimization>MaxSpeed</Optimization>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
