@@ -1,16 +1,25 @@
-#include <SFML/Graphics.hpp>
-#include "imgui.h"
-#include "imgui-SFML.h"
-
 #include <string>
 #include <iostream>
 #include <experimental/filesystem>
-
 #include <immintrin.h>
-
 #include <sstream>
 #include <thread>
 #include <array>
+
+#include <SFML/Graphics.hpp>
+#include <SFML/Window.hpp>
+#include <SFML/OpenGL.hpp>
+#include "imgui.h"
+#include "imgui-SFML.h"
+
+#include <glm/glm.hpp>
+#include <glm/vec3.hpp> // glm::vec3
+#include <glm/vec4.hpp> // glm::vec4
+#include <glm/mat4x4.hpp> // glm::mat4
+#include <glm/ext/matrix_transform.hpp> // glm::translate, glm::rotate, glm::scale
+#include <glm/ext/matrix_clip_space.hpp> // glm::perspective
+#include <glm/ext/scalar_constants.hpp> // glm::pi
+#include <glm/gtc/type_ptr.hpp>
 
 namespace fs = std::experimental::filesystem;
 namespace std {
@@ -45,8 +54,35 @@ sf::Vector2f camPos = { 0.f,0.f };
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int64_t tiers = 2;
-int64_t children = 95;
-bool static_framerate = true;
+int64_t children = 10;
+bool static_framerate = false;
+bool runSimulation = true;
+
+void drawSphere(double r, int lats, int longs) {
+    int i, j;
+    for (i = 0; i <= lats; i++) {
+        double lat0 = pi * (-0.5 + (double)(i - 1) / lats);
+        double z0 = sin(lat0);
+        double zr0 = cos(lat0);
+
+        double lat1 = pi * (-0.5 + (double)i / lats);
+        double z1 = sin(lat1);
+        double zr1 = cos(lat1);
+
+        glBegin(GL_QUAD_STRIP);
+        for (j = 0; j <= longs; j++) {
+            double lng = 2 * pi * (double)(j - 1) / longs;
+            double x = cos(lng);
+            double y = sin(lng);
+
+            glNormal3f(x * zr0, y * zr0, z0);
+            glVertex3f(r * x * zr0, r * y * zr0, r * z0);
+            glNormal3f(x * zr1, y * zr1, z1);
+            glVertex3f(r * x * zr1, r * y * zr1, r * z1);
+        }
+        glEnd();
+    }
+}
 
 struct Planet {
     int64_t* id;
@@ -317,34 +353,20 @@ public:
         AddPlanet(0, 0, 0, 0, 50, 0, 1000);
         AddPlanet(5000, 0, 0, 0, -50, 0, 1000);
     }
-    std::vector<sf::Sprite> DrawSolarSystem()
+    void DrawSolarSystem()
     {
-        std::vector<sf::Sprite> sprites;
         for (int64_t i = 1; i <= planetsLength;i++)
         {
             if (PlanetOption temp = GetPlanet(i))
             {
                 Planet planet = temp;
-                sf::Sprite sprite;
-                sprite.setTexture(circle);
-                sprite.setOrigin(128, 128);
-                sprite.setPosition(*planet.x, *planet.y);
-                double normalColor = ((*planet.z) - minz) / (maxz - minz);
-                // We don't use the last 1/3 of color space otherwise the min and max values have the same color
-                sprite.setColor(HSV2RGB(sf::Color(normalColor * 170, 255, 255)));
-                if (i == selectedPlanet)
-                {
-                    if (gotoSelected)
-                    {
-                        sprite.setColor(sf::Color::White);
-                        camPos = { float(*planet.x), float(*planet.y) };
-                    }
-                }
-                sprite.setScale(*planet.r / 128.f, *planet.r / 128.f);
-                sprites.emplace_back(sprite);
+                const float scale = 1.f/10000.f;
+                glPushMatrix();
+                glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
+                drawSphere(*planet.r * scale, 10, 10);
+                glPopMatrix();
             }
         }
-        return sprites;
     }
     void MergePlanets(int64_t idA, int64_t idB)
     {
@@ -643,6 +665,13 @@ public:
     }
 };
 
+void glLoadMatrixf(glm::mat4 matrix)
+{
+    float* fM;
+    fM = glm::value_ptr(matrix);
+    glLoadMatrixf(fM);
+}
+
 int main()
 {
     sf::Clock deltaClock;
@@ -661,8 +690,10 @@ int main()
     circle.loadFromFile("circle.png");
 
     sf::View centreView;
-    sf::Vector2u size = window.getSize();
-    centreView.setSize(sf::Vector2f(size.x, size.y));
+    sf::Vector2u windowSize = window.getSize();
+    sf::Vector2i windowMiddle = sf::Vector2i(windowSize.x / 2, windowSize.y / 2);
+    bool cursorGrabbed = true;
+    centreView.setSize(sf::Vector2f(windowSize.x, windowSize.y));
     centreView.setCenter(0, 0);
     float prevZoom = 1.f;
     float zoom = 1.f;
@@ -673,27 +704,68 @@ int main()
     uint8_t KEYA = 4;
     uint8_t KEYD = 8;
     uint8_t pressed = 0;
+    
+    // Opengl stuff -------------------------------
+    
+    glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
+    glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+    float cameraPitch = 0.f;
+    float cameraYaw = 0.f;
 
+    glm::vec3 cameraTarget = glm::vec3(0.0f, 0.0f, 0.0f);
+    glm::vec3 cameraDirection = glm::normalize(cameraPos - cameraTarget);
+    glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+    glm::vec3 cameraRight = glm::normalize(glm::cross(up, cameraDirection));
+    cameraUp = glm::cross(cameraDirection, cameraRight);
+
+    double frustRight = 1;
+    double frustUp = 1;
+    double nearClip = 0.1f;
+    double farClip = 3.f;
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glFrustum(-frustRight, frustRight, -frustUp, frustUp, nearClip, farClip);
+    glMatrixMode(GL_MODELVIEW);
+    window.pushGLStates();
+
+    // --------------------------------------------
     
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     SolarSystem system;
     system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
     system.MergeAllPlanets();
 
-    while (window.isOpen()) {
+    bool running = true;
+    while (running) {
         sf::Event event;
         while (window.pollEvent(event)) {
             ImGui::SFML::ProcessEvent(event);
             if (event.type == sf::Event::KeyPressed)
             {
-                if (event.key.code == sf::Keyboard::W)
+                const float cameraSpeed = 0.05f; // adjust accordingly
+                switch (event.key.code)
+                {
+                case sf::Keyboard::E: {
+                    cursorGrabbed = !cursorGrabbed;
+                }break;
+                case sf::Keyboard::W: {
+                    cameraPos += cameraSpeed * cameraFront;
                     pressed |= KEYW;
-                else if (event.key.code == sf::Keyboard::S)
+                }break;
+                case sf::Keyboard::S: {
+                    cameraPos -= cameraSpeed * cameraFront;
                     pressed |= KEYS;
-                else if (event.key.code == sf::Keyboard::A)
+                }break;
+                case sf::Keyboard::A: {
+                    cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
                     pressed |= KEYA;
-                else if (event.key.code == sf::Keyboard::D)
+                }break;
+                case sf::Keyboard::D: {
+                    cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
                     pressed |= KEYD;
+                }break;
+                }
             }
             else if (event.type == sf::Event::KeyReleased)
             {
@@ -708,13 +780,48 @@ int main()
             }
             else if (event.type == sf::Event::MouseMoved)
             {
-                mousePos = sf::Vector2f(event.mouseMove.x - float(size.x)/2, event.mouseMove.y - float(size.y)/2);
+                if (cursorGrabbed)
+                {
+                    sf::Mouse::setPosition(sf::Vector2i(windowMiddle.x, windowMiddle.y), window);
+                    if (event.mouseMove.x != windowMiddle.x || event.mouseMove.y != windowMiddle.y)
+                    {
+                        const float sensitivity = 0.1f;
+
+                        cameraYaw += (event.mouseMove.x - windowMiddle.x) * sensitivity;
+                        cameraPitch += (event.mouseMove.y - windowMiddle.y) * -sensitivity;
+
+                        if (cameraYaw > 180.f)
+                            cameraYaw = -180.f;
+                        if (cameraYaw < -180.f)
+                            cameraYaw = 180.f;
+                        if (cameraPitch > 89.0f)
+                            cameraPitch = 89.0f;
+                        if (cameraPitch < -89.0f)
+                            cameraPitch = -89.0f;
+
+                        glm::vec3 direction;
+                        direction.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+                        direction.y = sin(glm::radians(cameraPitch));
+                        direction.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+                        cameraFront = glm::normalize(direction);
+                    }
+                }
+                mousePos = sf::Vector2f(event.mouseMove.x - float(windowMiddle.x), event.mouseMove.y - float(windowMiddle.y));
             }
             else if (event.type == sf::Event::Resized)
             {
-                size = window.getSize();
-                centreView.setSize(sf::Vector2f(size.x, size.y));
+                windowSize = window.getSize();
+                windowMiddle = sf::Vector2i(windowSize.x / 2, windowSize.y / 2);
+                centreView.setSize(sf::Vector2f(windowSize.x, windowSize.y));
                 centreView.setCenter(0, 0);
+                double ratio = double(windowSize.x) / double(windowSize.y);
+                window.popGLStates();
+                glViewport(0, 0, windowSize.x, windowSize.y);
+                glMatrixMode(GL_PROJECTION);
+                glLoadIdentity();
+                glFrustum(-frustRight * ratio, frustRight * ratio, -frustUp, frustUp, nearClip, farClip);
+                glMatrixMode(GL_MODELVIEW);
+                window.pushGLStates();
                 prevZoom = 1.f;
                 zoom = 1.f;
             }
@@ -730,7 +837,7 @@ int main()
                 }
             }
             else if (event.type == sf::Event::Closed) {
-                window.close();
+                running = false;
             }
         }
         float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
@@ -757,9 +864,9 @@ int main()
             centreView.move(camPos - prevCamPos);
             prevCamPos = camPos;
         }
-        window.setView(centreView);
         window.clear();
         ImGui::SFML::Update(window, deltaClock.restart());
+        window.setView(centreView);
 
         ImGui::Begin("Update Rate");
         
@@ -790,6 +897,7 @@ int main()
         ImGui::Checkbox(" :Simd", &simd);
         ImGui::Checkbox(" :Lock Framerate", &static_framerate);
         ImGui::Checkbox(" :Planet Merging", &merging);
+        ImGui::Checkbox(" :Run Simulation", &runSimulation);
         ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
         ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
         ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
@@ -845,39 +953,58 @@ int main()
             }
             ImGui::Checkbox(": Follow Selected", &gotoSelected);
         }
+        ImGui::End();
+
         if (!ImGui::IsAnyWindowFocused())
         {
-            if (static_framerate)
+            if (runSimulation)
             {
-                if (updatesPerFrame > 1 && frameRate < 50.f)
-                    updatesPerFrame--;
-                else if (updatesPerFrame < 50 && frameRate > 55.f)
-                    updatesPerFrame++;
-            }
-            if (!multi_threaded)
-                for (int64_t i = 0; i < updatesPerFrame; i++)
+                if (static_framerate)
                 {
-                    if (simd)
-                        system.UpdatePlanetsSimd();
-                    else
-                        system.UpdatePlanets();
+                    if (updatesPerFrame > 1 && frameRate < 50.f)
+                        updatesPerFrame--;
+                    else if (updatesPerFrame < 50 && frameRate > 55.f)
+                        updatesPerFrame++;
                 }
-            else
-                for (int64_t i = 0; i < updatesPerFrame; i++)
-                    system.ThreadedUpdatePlanets();
+                if (!multi_threaded)
+                    for (int64_t i = 0; i < updatesPerFrame; i++)
+                    {
+                        if (simd)
+                            system.UpdatePlanetsSimd();
+                        else
+                            system.UpdatePlanets();
+                    }
+                else
+                    for (int64_t i = 0; i < updatesPerFrame; i++)
+                        system.ThreadedUpdatePlanets();
+            }
         }
-
-        ImGui::End();
 
         //ImGui::ShowTestWindow();
 
-        std::vector<sf::Sprite> sprites = system.DrawSolarSystem();
-        for (int64_t i=0;i<sprites.size();i++)
-        {
-            sf::Sprite sprite = sprites[i];
-            window.draw(sprite);
+        window.popGLStates();
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glLoadMatrixf(glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp));
+
+        // Draw a white grid "floor" for the tetrahedron to sit on.
+        glColor3f(1.0, 1.0, 1.0);
+        glBegin(GL_LINES);
+        const float lines = 50;
+        const float gap   = 0.5;
+        float dist = lines * gap * 0.5;
+        for (GLfloat i = -dist; i <= dist; i += gap) {
+            glVertex3f(i, 0, dist); glVertex3f(i, 0, -dist);
+            glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
         }
-       
+        glEnd();
+
+        system.DrawSolarSystem();
+
+        glFlush();
+
+        window.pushGLStates();
         ImGui::SFML::Render(window);
         window.display();
     }
