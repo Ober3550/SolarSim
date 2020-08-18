@@ -35,6 +35,7 @@ namespace std {
 
 sf::Texture circle;
 const int64_t VECWIDTH = 4;
+const int64_t NUM_THREADS = 4;
 const double pi = 2 * acos(0.0);
 float G = 4.f;
 const float zero = 0.f;
@@ -54,9 +55,10 @@ sf::Vector2f camPos = { 0.f,0.f };
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int64_t tiers = 2;
-int64_t children = 10;
+int64_t children = 20;
 bool static_framerate = false;
 bool runSimulation = true;
+bool drawPlane = true;
 
 void drawSphere(double r, int lats, int longs) {
     int i, j;
@@ -549,6 +551,9 @@ public:
                     // Find the square of each distance
                     // Code readibility may suffer due to functions not being optimized such that
                     // Simd vectors aren't being stored in registers properly and may be passed to cache or stack preemtively
+                    //  xxxx
+                    // +yyyy
+                    // =zzzz
                     __m256d rx   = _mm256_sub_pd(groupB->m_x, planetA_x);
                     __m256d rx2  = _mm256_mul_pd(rx, rx);
                     __m256d ry   = _mm256_sub_pd(groupB->m_y, planetA_y);
@@ -611,9 +616,17 @@ public:
 
         // Seems like threads don't like to be moved or recreated
         std::vector<std::thread> threads;
-        const int64_t NUM_THREADS = 4;
-        if (planetsLength < 32)
-            UpdatePlanetsSimd();
+        if (planetsLength < NUM_THREADS * VECWIDTH * 4)
+        {
+            if (simd)
+            {
+                UpdatePlanetsSimd();
+            }
+            else
+            {
+                UpdatePlanets();
+            }
+        }
         else
         {
             int64_t block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
@@ -636,15 +649,14 @@ public:
             {
                 threads[i].join();
             }
-            ApplyForces();
         }
+        ApplyForces();
     }
     void UpdatePlanetsSimd()
     {
         if(merging)
             MergeAllPlanets();
         SimdThreaded(0, planets.size());
-        ApplyForces();
     }
     void CheckPlanets()
     {
@@ -719,10 +731,12 @@ int main()
     glm::vec3 cameraRight = glm::normalize(glm::cross(up, cameraDirection));
     cameraUp = glm::cross(cameraDirection, cameraRight);
 
+    
     double frustRight = 1;
-    double frustUp = 1;
-    double nearClip = 0.1f;
-    double farClip = 3.f;
+    double frustUp = frustRight * double(windowMiddle.y) / double(windowMiddle.x);
+    double nearClip = 1.f;
+    double fov = 70;
+    double farClip = double(windowMiddle.x) / double(tan(fov * pi / 360));
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glFrustum(-frustRight, frustRight, -frustUp, frustUp, nearClip, farClip);
@@ -898,6 +912,7 @@ int main()
         ImGui::Checkbox(" :Lock Framerate", &static_framerate);
         ImGui::Checkbox(" :Planet Merging", &merging);
         ImGui::Checkbox(" :Run Simulation", &runSimulation);
+        ImGui::Checkbox(" :Draw Plane", &drawPlane);
         ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
         ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
         ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
@@ -982,6 +997,7 @@ int main()
 
         //ImGui::ShowTestWindow();
 
+        {
         window.popGLStates();
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -990,21 +1006,24 @@ int main()
 
         // Draw a white grid "floor" for the tetrahedron to sit on.
         glColor3f(1.0, 1.0, 1.0);
-        glBegin(GL_LINES);
-        const float lines = 50;
-        const float gap   = 0.5;
-        float dist = lines * gap * 0.5;
-        for (GLfloat i = -dist; i <= dist; i += gap) {
-            glVertex3f(i, 0, dist); glVertex3f(i, 0, -dist);
-            glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
+
+        if (drawPlane)
+        {
+            glBegin(GL_LINES);
+            const float lines = 50;
+            const float gap = 0.5;
+            float dist = lines * gap * 0.5;
+            for (GLfloat i = -dist; i <= dist; i += gap) {
+                glVertex3f(i, 0, dist); glVertex3f(i, 0, -dist);
+                glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
+            }
+            glEnd();
         }
-        glEnd();
 
         system.DrawSolarSystem();
-
         glFlush();
-
         window.pushGLStates();
+        }
         ImGui::SFML::Render(window);
         window.display();
     }
