@@ -762,6 +762,7 @@ int main()
                 {
                 case sf::Keyboard::E: {
                     cursorGrabbed = !cursorGrabbed;
+                    sf::Mouse::setPosition(sf::Vector2i(windowMiddle.x, windowMiddle.y), window);
                 }break;
                 case sf::Keyboard::W: {
                     cameraPos += cameraSpeed * cameraFront;
