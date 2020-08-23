@@ -23,6 +23,27 @@ namespace std {
     }
 }
 
+std::string add_commas(std::string str)
+{
+    int outer = 0;
+    bool decimal = false;
+    for (auto iter = str.end(); iter > str.begin(); iter--)
+    {
+        if (decimal)
+        {
+            if (outer % 3 == 0 && outer != 0)
+                iter = str.insert(iter, ',');
+        }
+        else if (str[str.length() - outer - 1] == '.')
+        {
+            decimal = true;
+            outer = -1;
+        }
+        outer++;
+    }
+    return str;
+}
+
 sf::Texture circle;
 const int VECWIDTH = 8;
 const double pi = 2 * acos(0.0);
@@ -657,7 +678,7 @@ int main()
     sf::Clock deltaClock;
     sf::Clock frameClock;
 
-    sf::RenderWindow window(sf::VideoMode(1000, 1000), "ImGui + SFML = <3");
+    sf::RenderWindow window(sf::VideoMode(1000, 1000), "Gravity Simulation");
     window.setFramerateLimit(60);
     ImGui::SFML::Init(window);
 
@@ -683,6 +704,8 @@ int main()
     uint8_t KEYD = 8;
     uint8_t pressed = 0;
 
+    bool simulating = false;
+    float max_ops = 0.f;
     
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     SolarSystem system;
@@ -774,24 +797,18 @@ int main()
         static int updatesPerFrame = 1;
         ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
         ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
-        std::string operations = std::to_string_with_precision(frameRate * float(updatesPerFrame * system.planetsLength * system.planetsLength));
-        int outer = 0;
-        bool decimal = false;
-        for (auto iter = operations.end(); iter > operations.begin();iter--)
+        float num_ops = frameRate * float(updatesPerFrame * system.planetsLength * system.planetsLength);
+        std::string operations = add_commas(std::to_string_with_precision(num_ops));
+        if (simulating)
         {
-            if (decimal)
+            if (num_ops > max_ops)
             {
-                if (outer % 3 == 0 && outer != 0)
-                    iter = operations.insert(iter, ',');
+                max_ops = num_ops;
             }
-            else if (operations[operations.length() - outer - 1] == '.')
-            {
-                decimal = true;
-                outer = -1;
-            }
-            outer++;
         }
+        std::string max_operat = add_commas(std::to_string_with_precision(max_ops));
         ImGui::Text(std::string("OPS:     " + operations).c_str());
+        ImGui::Text(std::string("MAX OPS: " + max_operat).c_str());
         ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
         ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
         ImGui::Checkbox(" :Threaded", &multi_threaded);
@@ -846,6 +863,7 @@ int main()
         }
         if (!ImGui::IsAnyWindowFocused())
         {
+            simulating = true;
             if (static_framerate)
             {
                 if (updatesPerFrame > 1 && frameRate < 50.f)
@@ -864,6 +882,10 @@ int main()
             else
                 for (int i = 0; i < updatesPerFrame; i++)
                     system.ThreadedUpdatePlanets();
+        }
+        else
+        {
+            simulating = false;
         }
 
         ImGui::End();
