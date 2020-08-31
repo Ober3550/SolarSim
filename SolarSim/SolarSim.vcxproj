@@ -139,7 +139,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(SolutionDir)glm;$(SolutionDir)glut-3.7/include;$(SolutionDir)Agui\Agui\include;$(SolutionDir)SFML-2.5.1\include;$(SolutionDir);$(SolutionDir)FastNoise;$(SolutionDir)abseil-cpp-master;$(SolutionName)/SFML-2.5.1-64/include;$(SolutionDir)imgui-master;$(SolutionDir)imgui-sfml-master;</AdditionalIncludeDirectories>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions</EnableEnhancedInstructionSet>
-      <Optimization>MaxSpeed</Optimization>
+      <Optimization>Disabled</Optimization>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

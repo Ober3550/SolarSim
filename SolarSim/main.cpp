@@ -689,7 +689,7 @@ int main()
     sf::Clock deltaClock;
     sf::Clock frameClock;
 
-    sf::RenderWindow window(sf::VideoMode(1000, 1000), "ImGui + SFML = <3");
+    sf::RenderWindow window(sf::VideoMode(1000, 1000), "ImGui + SFML = <3", sf::Style::Default, sf::ContextSettings(32));
     window.setFramerateLimit(60);
     ImGui::SFML::Init(window);
 
@@ -741,6 +741,26 @@ int main()
     glLoadIdentity();
     glFrustum(-frustRight, frustRight, -frustUp, frustUp, nearClip, farClip);
     glMatrixMode(GL_MODELVIEW);
+
+    GLfloat black[] = { 0.0, 0.0, 0.0, 1.0 };
+    GLfloat white[] = { 1.0, 1.0, 1.0, 1.0 };
+    GLfloat direction[] = { 0.0, 0.0, 1.0, 1.0 };
+
+    glMaterialfv(GL_FRONT,  GL_AMBIENT_AND_DIFFUSE, white);
+    glMaterialfv(GL_FRONT,  GL_SPECULAR,            white);
+    glMaterialf(GL_FRONT,   GL_SHININESS,           30);
+
+    glLightfv(GL_LIGHT0, GL_AMBIENT,  black);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE,  white);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, white);
+    glLightfv(GL_LIGHT0, GL_POSITION, direction);
+
+    glEnable(GL_LIGHTING);                // so the renderer considers light
+    glEnable(GL_LIGHT0);                  // turn LIGHT0 on
+    glEnable(GL_DEPTH_TEST);              // so the renderer considers depth
+    glEnable(GL_CULL_FACE);
+    glDepthFunc(GL_LESS);
+
     window.pushGLStates();
 
     // --------------------------------------------
@@ -819,6 +839,9 @@ int main()
                         direction.y = sin(glm::radians(cameraPitch));
                         direction.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
                         cameraFront = glm::normalize(direction);
+                        //glm::vec3 temp = cameraPos + cameraFront;
+                        //GLfloat camera[] = { temp.x,temp.y,temp.z,0 };
+                        //glLightfv(GL_LIGHT0, GL_POSITION, (GLfloat*)&camera);
                     }
                 }
                 mousePos = sf::Vector2f(event.mouseMove.x - float(windowMiddle.x), event.mouseMove.y - float(windowMiddle.y));
@@ -1022,9 +1045,12 @@ int main()
         }
 
         system.DrawSolarSystem();
+        glCullFace(GL_FRONT);
         glFlush();
         window.pushGLStates();
         }
+        //sf::ContextSettings windowSettings = window.getSettings();
+        //std::cout << "windowSettings.DepthBits: " << windowSettings.depthBits << "\n";
         ImGui::SFML::Render(window);
         window.display();
     }
