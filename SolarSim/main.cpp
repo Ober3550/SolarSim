@@ -426,11 +426,6 @@ public:
             PlanetGroup* groupA = &planets[i];
             for (int j = 0; j < VECWIDTH; j++)
             {
-                __m256 planetA_x = _mm256_set1_ps(groupA->x.m256_f32[j]);
-                __m256 planetA_y = _mm256_set1_ps(groupA->y.m256_f32[j]);
-                __m256 planetA_mass = _mm256_set1_ps(groupA->mass.m256_f32[j]);
-                __m256 planetA_r = _mm256_set1_ps(groupA->r.m256_f32[j]);
-                __m256i planetA_id = _mm256_set1_epi32(groupA->id.m256i_i32[j]);
                 __m256 planetA_Fx = _mm256_set1_ps(zero);
                 __m256 planetA_Fy = _mm256_set1_ps(zero);
 
@@ -441,14 +436,14 @@ public:
                     // Find the square of each distance
                     // Code readibility may suffer due to functions not being optimized such that
                     // Simd vectors aren't being stored in registers properly and may be passed to cache or stack preemtively
-                    __m256 rx = _mm256_sub_ps(groupB->x, planetA_x);
+                    __m256 rx = _mm256_sub_ps(groupB->x, _mm256_set1_ps(groupA->x.m256_f32[j]));
                     __m256 rx2 = _mm256_mul_ps(rx, rx);
-                    __m256 ry = _mm256_sub_ps(groupB->y, planetA_y);
+                    __m256 ry = _mm256_sub_ps(groupB->y, _mm256_set1_ps(groupA->y.m256_f32[j]));
                     __m256 ry2 = _mm256_mul_ps(ry, ry);
                     // Find the radius squared
                     __m256 r2 = _mm256_add_ps(rx2, ry2);
                     // Calculate gravity
-                    __m256 mass = _mm256_mul_ps(groupB->mass, planetA_mass);
+                    __m256 mass = _mm256_mul_ps(groupB->mass, _mm256_set1_ps(groupA->mass.m256_f32[j]));
                     __m256 gm = _mm256_mul_ps(mass, gravity);
                     // Find the forces for each dimension
                     __m256 F = _mm256_div_ps(gm, r2);
@@ -466,7 +461,7 @@ public:
                     // Remove nan values such as planets affecting themselves
                     // If id == 0
                     __m256i zeromask = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
-                    __m256i idmask = _mm256_cmpeq_epi32(groupB->id, planetA_id);
+                    __m256i idmask   = _mm256_cmpeq_epi32(groupB->id, _mm256_set1_epi32(groupA->id.m256i_i32[j]));
                     // If groupA.id == groupB.id
                     __m256i bothmask = _mm256_or_si256(zeromask, idmask);
                     bothmask = _mm256_xor_si256(bothmask, m_onesi);
