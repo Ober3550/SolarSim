@@ -839,9 +839,6 @@ int main()
                         direction.y = sin(glm::radians(cameraPitch));
                         direction.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
                         cameraFront = glm::normalize(direction);
-                        //glm::vec3 temp = cameraPos + cameraFront;
-                        //GLfloat camera[] = { temp.x,temp.y,temp.z,0 };
-                        //glLightfv(GL_LIGHT0, GL_POSITION, (GLfloat*)&camera);
                     }
                 }
                 mousePos = sf::Vector2f(event.mouseMove.x - float(windowMiddle.x), event.mouseMove.y - float(windowMiddle.y));
