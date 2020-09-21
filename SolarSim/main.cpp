@@ -5,6 +5,7 @@
 #include <sstream>
 #include <thread>
 #include <array>
+#include <queue>
 
 #include <SFML/Graphics.hpp>
 #include <SFML/Window.hpp>
@@ -35,7 +36,7 @@ namespace std {
 
 sf::Texture circle;
 const int64_t VECWIDTH = 4;
-const int64_t NUM_THREADS = 4;
+const int64_t NUM_THREADS = 1;
 const double pi = 2 * acos(0.0);
 float G = 4.f;
 const float zero = 0.f;
@@ -50,18 +51,20 @@ bool gotoSelected = false;
 bool merging = false;
 bool multi_threaded = true;
 bool simd = true;
+int forward_calculation = 2000;
 sf::Vector2f camPos = { 0.f,0.f };
 
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
-int64_t tiers = 2;
-int64_t children = 20;
+int64_t tiers = 1;
+int64_t children = 40;
 bool static_framerate = false;
 bool runSimulation = true;
-bool drawPlane = true;
+bool drawPlane = false;
+int global_tick = 0;
 
 void drawSphere(double r, int lats, int longs) {
-    int i, j;
+    int i, j = 0;
     for (i = 0; i <= lats; i++) {
         double lat0 = pi * (-0.5 + (double)(i - 1) / lats);
         double z0 = sin(lat0);
@@ -109,57 +112,21 @@ struct PlanetOption {
 };
 
 struct PlanetGroup {
-    union {
-        int64_t   id[VECWIDTH] = {};
-        __m256i m_id;
-    };
-    union {
-        double x[VECWIDTH] = {};
-        __m256d m_x;
-    };
-    union {
-        double y[VECWIDTH] = {};
-        __m256d m_y;
-    };
-    union {
-        double z[VECWIDTH] = {};
-        __m256d m_z;
-    };
-    union {
-        double mass[VECWIDTH] = {};
-        __m256d m_mass;
-    };
+    __m256i id;
+    __m256d x;
+    __m256d y;
+    __m256d z;
+    __m256d mass;
 };
 
 struct PlanetGroupExtra {
-    union {
-        double dx[VECWIDTH] = {};
-        __m256d m_dx;
-    };
-    union {
-        double dy[VECWIDTH] = {};
-        __m256d m_dy;
-    };
-    union {
-        double dz[VECWIDTH] = {};
-        __m256d m_dz;
-    };
-    union {
-        double Fx[VECWIDTH] = {};
-        __m256d m_Fx;
-    };
-    union {
-        double Fy[VECWIDTH] = {};
-        __m256d m_Fy;
-    };
-    union {
-        double Fz[VECWIDTH] = {};
-        __m256d m_Fz;
-    };
-    union {
-        double r[VECWIDTH] = {};
-        __m256d m_r;
-    };
+    __m256d dx;
+    __m256d dy;
+    __m256d dz;
+    __m256d Fx;
+    __m256d Fy;
+    __m256d Fz;
+    __m256d r;
 };
 
 sf::Color HSV2RGB(sf::Color input)
@@ -183,11 +150,10 @@ sf::Color HSV2RGB(sf::Color input)
 }
 
 class SolarSystem {
+public:
     std::vector<PlanetGroup>        planets;
     std::vector<PlanetGroupExtra>   planetsExtra;
-    double minz = -1;
-    double maxz =  1;
-public:
+    int tick;
     int64_t planetsLength = 0;
     void AddPlanet(double x, double y, double z, double dx, double dy, double dz, double mass)
     {
@@ -200,18 +166,18 @@ public:
         PlanetGroupExtra* groupExtra    = &planetsExtra[planetsLength / VECWIDTH];
         int64_t index = planetsLength % VECWIDTH;
         // Reserver id 0 for invalid planets
-        group->id  [index] = int64_t(planetsLength + 1);
-        group->x   [index] = x;
-        group->y   [index] = y;
-        group->z   [index] = z;
-        group->mass[index] = mass;
-        groupExtra->dx[index] = dx;
-        groupExtra->dy[index] = dy;
-        groupExtra->dz[index] = dz;
-        groupExtra->Fx[index] = 0.f;
-        groupExtra->Fy[index] = 0.f;
-        groupExtra->Fz[index] = 0.f;
-        groupExtra->r[index]  = sqrt(mass/pi) * 128.f;
+        group->id.m256i_i64[index] = int64_t(planetsLength + 1);
+        group->x.m256d_f64[index] = x;
+        group->y.m256d_f64[index] = y;
+        group->z.m256d_f64[index] = z;
+        group->mass.m256d_f64[index] = mass;
+        groupExtra->dx.m256d_f64[index] = dx;
+        groupExtra->dy.m256d_f64[index] = dy;
+        groupExtra->dz.m256d_f64[index] = dz;
+        groupExtra->Fx.m256d_f64[index] = 0.f;
+        groupExtra->Fy.m256d_f64[index] = 0.f;
+        groupExtra->Fz.m256d_f64[index] = 0.f;
+        groupExtra->r.m256d_f64[index]  = sqrt(mass/pi) * 128.f;
         planetsLength++;
     }
     PlanetOption GetPlanet(int64_t id)
@@ -223,21 +189,21 @@ public:
             PlanetGroupExtra* groupExtra = &planetsExtra[id / VECWIDTH];
             int64_t index = id % VECWIDTH;
             Planet planet = { 
-                & group->id[index], 
-                & group->x[index], 
-                & group->y[index],
-                & group->z[index],
-                & group->mass[index],
-                & groupExtra->dx[index],
-                & groupExtra->dy[index],
-                & groupExtra->dz[index],
-                & groupExtra->Fx[index],
-                & groupExtra->Fy[index],
-                & groupExtra->Fz[index],
-                & groupExtra->r[index]
+                & group->id.m256i_i64[index],
+                & group->x.m256d_f64[index],
+                & group->y.m256d_f64[index],
+                & group->z.m256d_f64[index],
+                & group->mass.m256d_f64[index],
+                & groupExtra->dx.m256d_f64[index],
+                & groupExtra->dy.m256d_f64[index],
+                & groupExtra->dz.m256d_f64[index],
+                & groupExtra->Fx.m256d_f64[index],
+                & groupExtra->Fy.m256d_f64[index],
+                & groupExtra->Fz.m256d_f64[index],
+                & groupExtra->r.m256d_f64[index]
             };
             // Check for uninitialized planet
-            if (group->id[index] == 0)
+            if (group->id.m256i_i64[index] == 0)
                 return PlanetOption();
             return PlanetOption{ true,planet };
         }
@@ -259,34 +225,34 @@ public:
                 if (PlanetOption temp = GetPlanet(planetsLength))
                 {
                     Planet lastPlanet = temp;
-                    group->x[index] = *lastPlanet.x;
-                    group->y[index] = *lastPlanet.y;
-                    group->z[index] = *lastPlanet.z;
-                    group->mass[index] = *lastPlanet.mass;
-                    groupExtra->dx[index] = *lastPlanet.dx;
-                    groupExtra->dy[index] = *lastPlanet.dy;
-                    groupExtra->dz[index] = *lastPlanet.dz;
-                    groupExtra->Fx[index] = *lastPlanet.Fx;
-                    groupExtra->Fy[index] = *lastPlanet.Fy;
-                    groupExtra->Fz[index] = *lastPlanet.Fz;
-                    groupExtra->r[index] = *lastPlanet.r;
+                    group->x.m256d_f64[index] = *lastPlanet.x;
+                    group->y.m256d_f64[index] = *lastPlanet.y;
+                    group->z.m256d_f64[index] = *lastPlanet.z;
+                    group->mass.m256d_f64[index] = *lastPlanet.mass;
+                    groupExtra->dx.m256d_f64[index] = *lastPlanet.dx;
+                    groupExtra->dy.m256d_f64[index] = *lastPlanet.dy;
+                    groupExtra->dz.m256d_f64[index] = *lastPlanet.dz;
+                    groupExtra->Fx.m256d_f64[index] = *lastPlanet.Fx;
+                    groupExtra->Fy.m256d_f64[index] = *lastPlanet.Fy;
+                    groupExtra->Fz.m256d_f64[index] = *lastPlanet.Fz;
+                    groupExtra->r.m256d_f64[index] = *lastPlanet.r;
                 }
             }
             // Don't forget to clear because simd will still do ops on these values
             clear_planet:;
             int64_t lastIndex = (planetsLength - 1) % VECWIDTH;
-            lastGroup->id[lastIndex] = 0;
-            lastGroup->x[lastIndex] = 0.f;
-            lastGroup->y[lastIndex] = 0.f;
-            lastGroup->z[lastIndex] = 0.f;
-            lastGroup->mass[lastIndex] = 0.f;
-            lastGroupExtra->dx[lastIndex] = 0.f;
-            lastGroupExtra->dy[lastIndex] = 0.f;
-            lastGroupExtra->dz[lastIndex] = 0.f;
-            lastGroupExtra->Fx[lastIndex] = 0.f;
-            lastGroupExtra->Fy[lastIndex] = 0.f;
-            lastGroupExtra->Fz[lastIndex] = 0.f;
-            lastGroupExtra->r[lastIndex] = 0.f;
+            lastGroup->id.m256i_i64[lastIndex] = 0;
+            lastGroup->x.m256d_f64[lastIndex] = 0.f;
+            lastGroup->y.m256d_f64[lastIndex] = 0.f;
+            lastGroup->z.m256d_f64[lastIndex] = 0.f;
+            lastGroup->mass.m256d_f64[lastIndex] = 0.f;
+            lastGroupExtra->dx.m256d_f64[lastIndex] = 0.f;
+            lastGroupExtra->dy.m256d_f64[lastIndex] = 0.f;
+            lastGroupExtra->dz.m256d_f64[lastIndex] = 0.f;
+            lastGroupExtra->Fx.m256d_f64[lastIndex] = 0.f;
+            lastGroupExtra->Fy.m256d_f64[lastIndex] = 0.f;
+            lastGroupExtra->Fz.m256d_f64[lastIndex] = 0.f;
+            lastGroupExtra->r.m256d_f64[lastIndex] = 0.f;
             planetsLength--;
         }
     }
@@ -319,17 +285,6 @@ public:
             new_dx = (*parent.dx) + cos(angleA + pi * 0.5) * scalar;
             new_dy = (*parent.dy) + sin(angleA + pi * 0.5) * scalar;
             new_dz = (*parent.dz) + sin(angleB + pi * 0.5) * scalar;
-
-            
-            /*if (rand() & 1)
-            {
-                
-            }
-            else
-            {
-                new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
-                new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
-            }*/
             
             AddPlanet(new_x, new_y, new_z, new_dx, new_dy, new_dz, new_mass);
         }
@@ -350,12 +305,16 @@ public:
             RecursivelyAddPlanets(parents[i], n, m - 1);
         }
     }
-    SolarSystem()
+    SolarSystem(int tick)
     {
-        AddPlanet(0, 0, 0, 0, 50, 0, 1000);
-        AddPlanet(5000, 0, 0, 0, -50, 0, 1000);
+        this->tick = tick;
+        if (!tick)
+        {
+            AddPlanet(0, 0, 0, 0, 50, 0, 1000);
+            AddPlanet(5000, 0, 0, 0, -50, 0, 1000);
+        }
     }
-    void DrawSolarSystem()
+    void DrawSolarSystem(bool static_radius)
     {
         for (int64_t i = 1; i <= planetsLength;i++)
         {
@@ -365,7 +324,10 @@ public:
                 const float scale = 1.f/10000.f;
                 glPushMatrix();
                 glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
-                drawSphere(*planet.r * scale, 10, 10);
+                if (static_radius)
+                    drawSphere(100.f * scale, 5, 5);
+                else
+                    drawSphere(*planet.r * scale, 10, 10);
                 glPopMatrix();
             }
         }
@@ -410,7 +372,7 @@ public:
             PlanetGroupExtra*   groupAExtra = &planetsExtra[i];
             for (int64_t j = 0; j < VECWIDTH; j++)
             {
-                if (i * VECWIDTH + j < planetsLength && groupA->id[j] != 0)
+                if (i * VECWIDTH + j < planetsLength && groupA->id.m256i_i64[j] != 0)
                 {
                     for (int64_t k = 0; k < planets.size(); k++)
                     {
@@ -418,19 +380,19 @@ public:
                         PlanetGroupExtra*   groupBExtra = &planetsExtra[k];
                         for (int64_t l = 0; l < VECWIDTH; l++)
                         {
-                            if (k * VECWIDTH + l < planetsLength && groupB->id[l] != 0)
+                            if (k * VECWIDTH + l < planetsLength && groupB->id.m256i_i64[l] != 0)
                             {
-                                if (groupB->id[l] != 0 && groupA->id[j] != groupB->id[l])
+                                if (groupB->id.m256i_i64[l] != 0 && groupA->id.m256i_i64[j] != groupB->id.m256i_i64[l])
                                 {
-                                    double rx = ((groupB->x[l]) - groupA->x[j]);
-                                    double ry = ((groupB->y[l]) - groupA->y[j]);
-                                    double rz = ((groupB->z[l]) - groupA->z[j]);
+                                    double rx = ((groupB->x.m256d_f64[l]) - groupA->x.m256d_f64[j]);
+                                    double ry = ((groupB->y.m256d_f64[l]) - groupA->y.m256d_f64[j]);
+                                    double rz = ((groupB->z.m256d_f64[l]) - groupA->z.m256d_f64[j]);
                                     double r2 = (rx * rx) + (ry * ry) + (rz * rz);
                                     // Check if planets merge
-                                    double mass_r2 = ((groupAExtra->r[j] + groupBExtra->r[l]) * merge_r) * ((groupAExtra->r[j] + groupBExtra->r[l]) * merge_r);
+                                    double mass_r2 = ((groupAExtra->r.m256d_f64[j] + groupBExtra->r.m256d_f64[l]) * merge_r) * ((groupAExtra->r.m256d_f64[j] + groupBExtra->r.m256d_f64[l]) * merge_r);
                                     if (r2 < mass_r2)
                                     {
-                                        MergePlanets(groupA->id[j], groupB->id[l]);
+                                        MergePlanets(groupA->id.m256i_i64[j], groupB->id.m256i_i64[l]);
                                         j--;
                                         goto check_again;
                                     }
@@ -445,28 +407,27 @@ public:
     }
     void ApplyForces()
     {
-        // Separate applying forces and velocity since it's O(n)
-        for (int64_t i = 0; i < planetsLength / VECWIDTH + 1; i++)
+        if (planetsLength)
         {
-            PlanetGroup* groupA = &planets[i];
-            PlanetGroupExtra* groupAExtra = &planetsExtra[i];
-            for (int64_t j = 0; j < VECWIDTH; j++)
+            // Separate applying forces and velocity since it's O(n)
+            for (int64_t i = 0; i < planetsLength / VECWIDTH + 1; i++)
             {
-                if (groupA->id[j] != 0)
+                PlanetGroup* groupA = &planets[i];
+                PlanetGroupExtra* groupAExtra = &planetsExtra[i];
+                for (int64_t j = 0; j < VECWIDTH; j++)
                 {
-                    groupAExtra->dx[j] += groupAExtra->Fx[j] / groupA->mass[j];
-                    groupAExtra->dy[j] += groupAExtra->Fy[j] / groupA->mass[j];
-                    groupAExtra->dz[j] += groupAExtra->Fz[j] / groupA->mass[j];
-                    groupA->x[j] += groupAExtra->dx[j];
-                    groupA->y[j] += groupAExtra->dy[j];
-                    groupA->z[j] += groupAExtra->dz[j];
-                    if (groupA->z[j] < minz)
-                        minz = groupA->z[j];
-                    if (groupA->z[j] > maxz)
-                        maxz = groupA->z[j];
-                    groupAExtra->Fx[j] = 0.f;
-                    groupAExtra->Fy[j] = 0.f;
-                    groupAExtra->Fz[j] = 0.f;
+                    if (groupA->id.m256i_i64[j] != 0)
+                    {
+                        groupAExtra->dx.m256d_f64[j] += groupAExtra->Fx.m256d_f64[j] / groupA->mass.m256d_f64[j];
+                        groupAExtra->dy.m256d_f64[j] += groupAExtra->Fy.m256d_f64[j] / groupA->mass.m256d_f64[j];
+                        groupAExtra->dz.m256d_f64[j] += groupAExtra->Fz.m256d_f64[j] / groupA->mass.m256d_f64[j];
+                        groupA->x.m256d_f64[j] += groupAExtra->dx.m256d_f64[j];
+                        groupA->y.m256d_f64[j] += groupAExtra->dy.m256d_f64[j];
+                        groupA->z.m256d_f64[j] += groupAExtra->dz.m256d_f64[j];
+                        groupAExtra->Fx.m256d_f64[j] = 0.f;
+                        groupAExtra->Fy.m256d_f64[j] = 0.f;
+                        groupAExtra->Fz.m256d_f64[j] = 0.f;
+                    }
                 }
             }
         }
@@ -483,23 +444,23 @@ public:
             PlanetGroupExtra* groupAExtra = &planetsExtra[i];
             for (int64_t j = 0; j < VECWIDTH; j++)
             {
-                if (groupA->id[j] != 0)
+                if (groupA->id.m256i_i64[j] != 0)
                 {
                     for (int64_t k = 0; k < planets.size(); k++)
                     {
                         PlanetGroup* groupB = &planets[k];
                         for (int64_t l = 0; l < VECWIDTH; l++)
                         {
-                            if (groupB->id[l] != 0 && groupA->id[j] != groupB->id[l])
+                            if (groupB->id.m256i_i64[l] != 0 && groupA->id.m256i_i64[j] != groupB->id.m256i_i64[l])
                             {
-                                double rx = groupB->x[l] - groupA->x[j];
-                                double ry = groupB->y[l] - groupA->y[j];
-                                double rz = groupB->z[l] - groupA->z[j];
+                                double rx = groupB->x.m256d_f64[l] - groupA->x.m256d_f64[j];
+                                double ry = groupB->y.m256d_f64[l] - groupA->y.m256d_f64[j];
+                                double rz = groupB->z.m256d_f64[l] - groupA->z.m256d_f64[j];
                                 double r2 = (rx * rx) + (ry * ry) + (rz * rz);
-                                double F = (G * (groupA->mass[j]) * groupB->mass[j]) / r2;
-                                groupAExtra->Fx[j] += F * rx;
-                                groupAExtra->Fy[j] += F * ry;
-                                groupAExtra->Fz[j] += F * rz;
+                                double F = (G * (groupA->mass.m256d_f64[j]) * groupB->mass.m256d_f64[j]) / r2;
+                                groupAExtra->Fx.m256d_f64[j] += F * rx;
+                                groupAExtra->Fy.m256d_f64[j] += F * ry;
+                                groupAExtra->Fz.m256d_f64[j] += F * rz;
                             }
                         }
                     }
@@ -507,7 +468,7 @@ public:
             }
         }
     }
-    void UpdatePlanets()
+    void UpdatePlanets(bool apply_forces)
     {
         // F = (G * m1 * m2) / r^2
         // F = ma
@@ -516,7 +477,8 @@ public:
         if(merging)
             MergeAllPlanets();
         Threaded(0, planets.size());
-        ApplyForces();
+        if(apply_forces)
+            ApplyForces();
     }
     
     void SimdThreaded(const int64_t start, const int64_t end)
@@ -527,11 +489,11 @@ public:
             PlanetGroupExtra*   groupAExtra = &planetsExtra[i];
             for (int64_t j = 0; j < VECWIDTH; j++)
             {
-                __m256d planetA_x       = _mm256_set1_pd(groupA->x[j]);
-                __m256d planetA_y       = _mm256_set1_pd(groupA->y[j]);
-                __m256d planetA_z       = _mm256_set1_pd(groupA->z[j]);
-                __m256d planetA_mass    = _mm256_set1_pd(groupA->mass[j]);
-                __m256i planetA_id      = _mm256_set1_epi64x(groupA->id[j]);
+                __m256d planetA_x       = _mm256_set1_pd(groupA->x.m256d_f64[j]);
+                __m256d planetA_y       = _mm256_set1_pd(groupA->y.m256d_f64[j]);
+                __m256d planetA_z       = _mm256_set1_pd(groupA->z.m256d_f64[j]);
+                __m256d planetA_mass    = _mm256_set1_pd(groupA->mass.m256d_f64[j]);
+                __m256i planetA_id      = _mm256_set1_epi64x(groupA->id.m256i_i64[j]);
                 union {
                     double  planetA_Fx[VECWIDTH];
                     __m256d mplanetA_Fx = _mm256_set1_pd(0);
@@ -554,16 +516,16 @@ public:
                     //  xxxx
                     // +yyyy
                     // =zzzz
-                    __m256d rx   = _mm256_sub_pd(groupB->m_x, planetA_x);
+                    __m256d rx   = _mm256_sub_pd(groupB->x, planetA_x);
                     __m256d rx2  = _mm256_mul_pd(rx, rx);
-                    __m256d ry   = _mm256_sub_pd(groupB->m_y, planetA_y);
+                    __m256d ry   = _mm256_sub_pd(groupB->y, planetA_y);
                     __m256d ry2  = _mm256_mul_pd(ry, ry);
-                    __m256d rz   = _mm256_sub_pd(groupB->m_z, planetA_z);
+                    __m256d rz   = _mm256_sub_pd(groupB->z, planetA_z);
                     __m256d rz2  = _mm256_mul_pd(rz, rz);
                     // Find the radius squared
                     __m256d r2   = _mm256_add_pd(_mm256_add_pd(rx2, ry2), rz2);
                     // Calculate gravity
-                    __m256d mass  = _mm256_mul_pd(groupB->m_mass, planetA_mass);
+                    __m256d mass  = _mm256_mul_pd(groupB->mass, planetA_mass);
                     __m256d gm    = _mm256_mul_pd(mass, gravity);
                     // Find the forces for each dimension
                     __m256d F = _mm256_div_pd(gm, r2);
@@ -585,8 +547,8 @@ public:
 
                     // Remove nan values such as planets affecting themselves
                     // If id == 0
-                    __m256i zeromask    = _mm256_cmpeq_epi64(groupB->m_id, m_zeroi);
-                    __m256i idmask      = _mm256_cmpeq_epi64(groupB->m_id, planetA_id);
+                    __m256i zeromask    = _mm256_cmpeq_epi64(groupB->id, m_zeroi);
+                    __m256i idmask      = _mm256_cmpeq_epi64(groupB->id, planetA_id);
                     // If groupA.id == groupB.id
                     __m256i bothmask    = _mm256_or_si256(zeromask, idmask);
                     bothmask            = _mm256_xor_si256(bothmask, m_onesi);
@@ -600,14 +562,14 @@ public:
                 }
                 for (int64_t l = 0; l < VECWIDTH; l++)
                 {
-                    groupAExtra->Fx[j] += planetA_Fx[l];
-                    groupAExtra->Fy[j] += planetA_Fy[l];
-                    groupAExtra->Fz[j] += planetA_Fz[l];
+                    groupAExtra->Fx.m256d_f64[j] += planetA_Fx[l];
+                    groupAExtra->Fy.m256d_f64[j] += planetA_Fy[l];
+                    groupAExtra->Fz.m256d_f64[j] += planetA_Fz[l];
                 }
             }
         }
     }
-    void ThreadedUpdatePlanets()
+    void ThreadedUpdatePlanets(bool apply_forces)
     {
         // I don't think this can be multithreaded since it relies on removing elements being thread safe... 
         // which is obvious why it wouldn't be
@@ -624,7 +586,7 @@ public:
             }
             else
             {
-                UpdatePlanets();
+                UpdatePlanets(apply_forces);
             }
         }
         else
@@ -650,7 +612,8 @@ public:
                 threads[i].join();
             }
         }
-        ApplyForces();
+        if(apply_forces)
+            ApplyForces();
     }
     void UpdatePlanetsSimd()
     {
@@ -667,9 +630,9 @@ public:
             PlanetGroupExtra* groupAExtra = &planetsExtra[i];
             for (int64_t j = 0; j < VECWIDTH; j++)
             {
-                if (groupA->id[j] != 0)
+                if (groupA->id.m256i_i64[j] != 0)
                 {
-                    if (groupA->z[j] != 0)
+                    if (groupA->z.m256d_f64[j] != 0)
                         bool hello = true;
                 }
             }
@@ -766,9 +729,11 @@ int main()
     // --------------------------------------------
     
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
-    SolarSystem system;
+    std::list<SolarSystem> simulation;
+    SolarSystem system = SolarSystem(0);
     system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
     system.MergeAllPlanets();
+    simulation.emplace_back(system);
 
     bool running = true;
     while (running) {
@@ -908,7 +873,7 @@ int main()
         static int updatesPerFrame = 1;
         ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
         ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
-        std::string operations = std::to_string_with_precision(frameRate * float(updatesPerFrame * system.planetsLength * system.planetsLength));
+        std::string operations = std::to_string_with_precision(frameRate * float(updatesPerFrame * simulation.front().planetsLength * simulation.front().planetsLength));
         int64_t outer = 0;
         bool decimal = false;
         for (auto iter = operations.end(); iter > operations.begin();iter--)
@@ -926,7 +891,9 @@ int main()
             outer++;
         }
         ImGui::Text(std::string("OPS:     " + operations).c_str());
-        ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
+        ImGui::Text(std::string("PLANETS: " + std::to_string(simulation.front().planetsLength)).c_str());
+        ImGui::Text(std::string("Tick: " + std::to_string(simulation.front().tick)).c_str());
+        ImGui::Text(std::string("Forward Frames: " + std::to_string(simulation.size()-1)).c_str());
         ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
         ImGui::Checkbox(" :Threaded", &multi_threaded);
         ImGui::Checkbox(" :Simd", &simd);
@@ -941,8 +908,8 @@ int main()
         frameClock.restart();
 
         ImGui::Begin("Modify Planet");
-        ImGui::SliderInt(": ID", (int*)&selectedPlanet, 1, system.planetsLength);
-        if (PlanetOption temp = system.GetPlanet(selectedPlanet))
+        ImGui::SliderInt(": ID", (int*)&selectedPlanet, 1, simulation.front().planetsLength);
+        if (PlanetOption temp = simulation.front().GetPlanet(selectedPlanet))
         {
             float smin = -1000;
             float smax = 1000;
@@ -972,48 +939,46 @@ int main()
             ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
             if (ImGui::Button("Remove Planet"))
             {
-                system.RemovePlanet(selectedPlanet);
+                simulation.front().RemovePlanet(selectedPlanet);
             }
             if (ImGui::Button("Add Planet"))
             {
-                system.AddPlanet(smin, smin, 0, 0, 0, 0, 0.5);
-                selectedPlanet = system.planetsLength;
+                simulation.front().AddPlanet(smin, smin, 0, 0, 0, 0, 0.5);
+                selectedPlanet = simulation.front().planetsLength;
             }
             if (ImGui::Button("Add Random"))
             {
-                system.AddRandomSatellite(selectedPlanet);
+                simulation.front().AddRandomSatellite(selectedPlanet);
             }
             if (ImGui::Button("Add Universe"))
             {
-                system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+                simulation.front().RecursivelyAddPlanets(selectedPlanet, children, tiers);
             }
             ImGui::Checkbox(": Follow Selected", &gotoSelected);
         }
         ImGui::End();
 
-        if (!ImGui::IsAnyWindowFocused())
+        if (forward_calculation)
         {
-            if (runSimulation)
+            while (simulation.size() < forward_calculation)
             {
-                if (static_framerate)
-                {
-                    if (updatesPerFrame > 1 && frameRate < 50.f)
-                        updatesPerFrame--;
-                    else if (updatesPerFrame < 50 && frameRate > 55.f)
-                        updatesPerFrame++;
-                }
-                if (!multi_threaded)
-                    for (int64_t i = 0; i < updatesPerFrame; i++)
-                    {
-                        if (simd)
-                            system.UpdatePlanetsSimd();
-                        else
-                            system.UpdatePlanets();
-                    }
+                /*if (multi_threaded)
+                    simulation.back().ThreadedUpdatePlanets(false);
                 else
-                    for (int64_t i = 0; i < updatesPerFrame; i++)
-                        system.ThreadedUpdatePlanets();
+                    simulation.back().UpdatePlanets(false);
+                simulation.back().ApplyForces();*/
+                simulation.back().ThreadedUpdatePlanets(false);
+                SolarSystem new_system = SolarSystem(simulation.back());
+                new_system.tick++;
+                new_system.ApplyForces();
+                simulation.emplace_back(new_system);
             }
+        }
+        if (runSimulation)
+        {
+            if (simulation.front().tick < global_tick)
+                simulation.pop_front();
+            global_tick++;
         }
 
         //ImGui::ShowTestWindow();
@@ -1040,8 +1005,19 @@ int main()
             }
             glEnd();
         }
-
-        system.DrawSolarSystem();
+        int index = 0;
+        for (auto it = simulation.begin(); it != simulation.end(); it++)
+        {
+            if (it == simulation.begin())
+            {
+                simulation.front().DrawSolarSystem(false);
+            }
+            else if(index%10 == 0)
+            {
+                it->DrawSolarSystem(true);
+            }
+            index++;
+        }
         glCullFace(GL_FRONT);
         glFlush();
         window.pushGLStates();
