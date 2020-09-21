@@ -209,16 +209,6 @@ public:
             float scalar = sqrt(G*((*parent.mass) + 0.5f * children * new_mass));
             new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
             new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
-            /*if (rand() & 1)
-            {
-                
-            }
-            else
-            {
-                new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
-                new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
-            }*/
-            
             AddPlanet(new_x, new_y, new_dx, new_dy, new_mass);
         }
     }
@@ -387,12 +377,13 @@ public:
             }
         }
     }
-    void Threaded(const int start, const int end)
+    void Threaded(const int start, int end)
     {
         // F = (G * m1 * m2) / r^2
         // F = ma
         // a = m / F;
         // a = m / ((G * m * m2) / r^2)
+        if (end > planets.size()) end = planets.size();
         for (int i = start; i < end; i++)
         {
             PlanetGroup* groupA = &planets[i];
@@ -420,8 +411,9 @@ public:
             }
         }
     }
-    void SimdThreaded(const int start, const int end)
+    void SimdThreaded(const int start, int end)
     {
+        if (end > planets.size()) end = planets.size();
         for (int i = start; i < end; i++)
         {
             PlanetGroup* groupA = &planets[i];
