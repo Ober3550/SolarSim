@@ -61,6 +61,7 @@ bool gotoSelected = false;
 bool merging = false;
 bool multi_threaded = true;
 bool simd = true;
+int NUM_THREADS = 4;
 sf::Vector2f camPos = { 0.f,0.f };
 
 const float minZoom = 0.5;
@@ -484,7 +485,6 @@ public:
 
         // Seems like threads don't like to be moved or recreated
         std::vector<std::thread> threads;
-        const int NUM_THREADS = 4;
         if (planetsLength < 32)
             UpdatePlanetsSimd();
         else
@@ -651,8 +651,8 @@ int main()
     
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     SolarSystem system;
-    system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-    system.MergeAllPlanets(1, system.planetsLength);
+    //system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+    //system.MergeAllPlanets(1, system.planetsLength);
 
     while (window.isOpen()) {
         sf::Event event;
@@ -753,6 +753,7 @@ int main()
         ImGui::Text(std::string("MAX OPS: " + max_operat).c_str());
         ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
         ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
+        ImGui::SliderInt(" :Threads", &NUM_THREADS, 1, 20);
         ImGui::Checkbox(" :Threaded", &multi_threaded);
         ImGui::Checkbox(" :Simd", &simd);
         ImGui::Checkbox(" :Lock Framerate", &static_framerate);
@@ -800,6 +801,7 @@ int main()
             if (ImGui::Button("Add Universe"))
             {
                 system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+                system.MergeAllPlanets(1, system.planetsLength);
             }
             ImGui::Checkbox(": Follow Selected", &gotoSelected);
         }
