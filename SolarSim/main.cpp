@@ -34,9 +34,10 @@ namespace std {
     }
 }
 
+int NUM_THREADS = std::thread::hardware_concurrency();
+
 sf::Texture circle;
 const int64_t VECWIDTH = 4;
-const int64_t NUM_THREADS = 1;
 const double pi = 2 * acos(0.0);
 float G = 4.f;
 const float zero = 0.f;
@@ -51,7 +52,8 @@ bool gotoSelected = false;
 bool merging = false;
 bool multi_threaded = true;
 bool simd = true;
-int forward_calculation = 2000;
+int forward_calculation = 100;
+int tick_spacing = 10;
 sf::Vector2f camPos = { 0.f,0.f };
 
 const float minZoom = 0.5;
@@ -89,7 +91,22 @@ void drawSphere(double r, int lats, int longs) {
     }
 }
 
-struct Planet {
+struct PlanetObject {
+    int64_t id;
+    double x;
+    double y;
+    double z;
+    double mass;
+    double dx;
+    double dy;
+    double dz;
+    double Fx;
+    double Fy;
+    double Fz;
+    double r;
+};
+
+struct PlanetReference {
     int64_t* id;
     double* x;
     double* y;
@@ -106,9 +123,9 @@ struct Planet {
 
 struct PlanetOption {
     bool valid = false;
-    Planet planet;
+    PlanetReference planet;
     operator bool() { return valid; }
-    operator Planet() { return planet; }
+    operator PlanetReference() { return planet; }
 };
 
 struct PlanetGroup {
@@ -155,7 +172,7 @@ public:
     std::vector<PlanetGroupExtra>   planetsExtra;
     int tick;
     int64_t planetsLength = 0;
-    void AddPlanet(double x, double y, double z, double dx, double dy, double dz, double mass)
+    void AddPlanet(double x, double y, double z, double dx, double dy, double dz, double mass, double Fx=0.f, double Fy=0.f, double Fz=0.f)
     {
         if (planetsLength % VECWIDTH == 0)
         {
@@ -174,13 +191,42 @@ public:
         groupExtra->dx.m256d_f64[index] = dx;
         groupExtra->dy.m256d_f64[index] = dy;
         groupExtra->dz.m256d_f64[index] = dz;
-        groupExtra->Fx.m256d_f64[index] = 0.f;
-        groupExtra->Fy.m256d_f64[index] = 0.f;
-        groupExtra->Fz.m256d_f64[index] = 0.f;
+        groupExtra->Fx.m256d_f64[index] = Fx;
+        groupExtra->Fy.m256d_f64[index] = Fy;
+        groupExtra->Fz.m256d_f64[index] = Fz;
         groupExtra->r.m256d_f64[index]  = sqrt(mass/pi) * 128.f;
         planetsLength++;
     }
-    PlanetOption GetPlanet(int64_t id)
+    void AddPlanet(PlanetObject planet)
+    {
+        AddPlanet(planet.x, planet.y, planet.z, planet.dx, planet.dy, planet.dz, planet.mass, planet.Fx, planet.Fy, planet.Fz);
+    }
+    PlanetObject GetPlanetObject(int64_t id)
+    {
+        id--;
+        if (id / VECWIDTH < planets.size())
+        {
+            PlanetGroup* group = &planets[id / VECWIDTH];
+            PlanetGroupExtra* groupExtra = &planetsExtra[id / VECWIDTH];
+            int64_t index = id % VECWIDTH;
+            PlanetObject new_planet = {
+                group->id.m256i_i64[index],
+                group->x.m256d_f64[index],
+                group->y.m256d_f64[index],
+                group->z.m256d_f64[index],
+                group->mass.m256d_f64[index],
+                groupExtra->dx.m256d_f64[index],
+                groupExtra->dy.m256d_f64[index],
+                groupExtra->dz.m256d_f64[index],
+                groupExtra->Fx.m256d_f64[index],
+                groupExtra->Fy.m256d_f64[index],
+                groupExtra->Fz.m256d_f64[index],
+                groupExtra->r.m256d_f64[index]
+            };
+            return new_planet;
+        }
+    }
+    PlanetOption GetPlanetReference(int64_t id)
     {
         id--;
         if (id / VECWIDTH < planets.size())
@@ -188,7 +234,7 @@ public:
             PlanetGroup*      group      = &planets[id / VECWIDTH];
             PlanetGroupExtra* groupExtra = &planetsExtra[id / VECWIDTH];
             int64_t index = id % VECWIDTH;
-            Planet planet = { 
+            PlanetReference planet = { 
                 & group->id.m256i_i64[index],
                 & group->x.m256d_f64[index],
                 & group->y.m256d_f64[index],
@@ -222,9 +268,9 @@ public:
                 PlanetGroup* group = &planets[id / VECWIDTH];
                 PlanetGroupExtra* groupExtra = &planetsExtra[id / VECWIDTH];
                 int64_t index = id % VECWIDTH;
-                if (PlanetOption temp = GetPlanet(planetsLength))
+                if (PlanetOption temp = GetPlanetReference(planetsLength))
                 {
-                    Planet lastPlanet = temp;
+                    PlanetReference lastPlanet = temp;
                     group->x.m256d_f64[index] = *lastPlanet.x;
                     group->y.m256d_f64[index] = *lastPlanet.y;
                     group->z.m256d_f64[index] = *lastPlanet.z;
@@ -257,9 +303,9 @@ public:
         }
     }
     void AddRandomSatellite(int64_t id) {
-        if (PlanetOption temp = GetPlanet(id))
+        if (PlanetOption temp = GetPlanetReference(id))
         {
-            Planet parent = temp;
+            PlanetReference parent = temp;
             const int       angles = (360 * 32);
             const int       steps = 1000;
             const double    min_dis = 5;
@@ -318,14 +364,14 @@ public:
     {
         for (int64_t i = 1; i <= planetsLength;i++)
         {
-            if (PlanetOption temp = GetPlanet(i))
+            if (PlanetOption temp = GetPlanetReference(i))
             {
-                Planet planet = temp;
+                PlanetReference planet = temp;
                 const float scale = 1.f/10000.f;
                 glPushMatrix();
                 glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
                 if (static_radius)
-                    drawSphere(100.f * scale, 5, 5);
+                    drawSphere(100.f * scale, 2, 4);
                 else
                     drawSphere(*planet.r * scale, 10, 10);
                 glPopMatrix();
@@ -341,12 +387,12 @@ public:
             idB = temp;
         }
         assert(idA != idB);
-        if (PlanetOption tempA = GetPlanet(idA))
+        if (PlanetOption tempA = GetPlanetReference(idA))
         {
-            if (PlanetOption tempB = GetPlanet(idB))
+            if (PlanetOption tempB = GetPlanetReference(idB))
             {
-                Planet planetA = tempA;
-                Planet planetB = tempB;
+                PlanetReference planetA = tempA;
+                PlanetReference planetB = tempB;
                 float total_mass = *planetA.mass + *planetB.mass;
                 float relative_mass = (*planetB.mass / *planetA.mass) * 0.5f;
                 *planetA.x += (*planetB.x - *planetA.x) * relative_mass;
@@ -481,8 +527,10 @@ public:
             ApplyForces();
     }
     
-    void SimdThreaded(const int64_t start, const int64_t end)
+    void SimdThreaded(const int64_t start, int64_t end)
     {
+        if (end > planets.size())
+            end = planets.size();
         for (int64_t i = start; i < end; i++)
         {
             PlanetGroup*        groupA      = &planets[i];
@@ -574,43 +622,27 @@ public:
         // I don't think this can be multithreaded since it relies on removing elements being thread safe... 
         // which is obvious why it wouldn't be
         if(merging)
-            MergeAllPlanets();
-
-        // Seems like threads don't like to be moved or recreated
+            MergeAllPlanets();        
         std::vector<std::thread> threads;
-        if (planetsLength < NUM_THREADS * VECWIDTH * 4)
+        int64_t block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
+        for (int64_t i = 0; i < NUM_THREADS; i++)
         {
             if (simd)
             {
-                UpdatePlanetsSimd();
+                threads.emplace_back(std::thread([&](SolarSystem* system, const int64_t start, const int64_t end) {
+                    system->SimdThreaded(start, end);
+                    }, this, i * block_size, (i + 1) * block_size));
             }
             else
             {
-                UpdatePlanets(apply_forces);
+                threads.emplace_back(std::thread([&](SolarSystem* system, const int64_t start, const int64_t end) {
+                    system->Threaded(start, end);
+                    }, this, i * block_size, (i + 1) * block_size));
             }
         }
-        else
+        for (int64_t i = 0; i < NUM_THREADS; i++)
         {
-            int64_t block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
-            for (int64_t i = 0; i < NUM_THREADS; i++)
-            {
-                if (simd)
-                {
-                    threads.emplace_back(std::thread([&](SolarSystem* system, const int64_t start, const int64_t end) {
-                        system->SimdThreaded(start, end);
-                        }, this, i * block_size, (i + 1) * block_size));
-                }
-                else
-                {
-                    threads.emplace_back(std::thread([&](SolarSystem* system, const int64_t start, const int64_t end) {
-                        system->Threaded(start, end);
-                        }, this, i * block_size, (i + 1) * block_size));
-                }
-            }
-            for (int64_t i = 0; i < NUM_THREADS; i++)
-            {
-                threads[i].join();
-            }
+            threads[i].join();
         }
         if(apply_forces)
             ApplyForces();
@@ -840,192 +872,204 @@ int main()
                 running = false;
             }
         }
-        float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
-        const float move_speed = 50.f;
-        for (int64_t i = 0; i < 4; i++)
+        if (running)
         {
-            if ((pressed >> i) & 1)
+            float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
+            const float move_speed = 50.f;
+            for (int64_t i = 0; i < 4; i++)
             {
-                if (i < 2)
-                    camPos.y += move_speed * zoom * ((i & 1) ? 1.f : -1.f) / (frameRate / 60);
-                else
-                    camPos.x += move_speed * zoom * ((i & 1) ? 1.f : -1.f) / (frameRate / 60);
+                if ((pressed >> i) & 1)
+                {
+                    if (i < 2)
+                        camPos.y += move_speed * zoom * ((i & 1) ? 1.f : -1.f) / (frameRate / 60);
+                    else
+                        camPos.x += move_speed * zoom * ((i & 1) ? 1.f : -1.f) / (frameRate / 60);
+                }
             }
-        }
-        if (prevZoom != zoom)
-        {
-            if (zoom < prevZoom)
-                camPos += (mousePos * prevZoom * 2.f * (prevZoom/zoom));
-            centreView.zoom(pow(zoom / prevZoom,2));
-            prevZoom = zoom;
-        }
-        if (prevCamPos != camPos)
-        {
-            centreView.move(camPos - prevCamPos);
-            prevCamPos = camPos;
-        }
-        window.clear();
-        ImGui::SFML::Update(window, deltaClock.restart());
-        window.setView(centreView);
+            if (prevZoom != zoom)
+            {
+                if (zoom < prevZoom)
+                    camPos += (mousePos * prevZoom * 2.f * (prevZoom / zoom));
+                centreView.zoom(pow(zoom / prevZoom, 2));
+                prevZoom = zoom;
+            }
+            if (prevCamPos != camPos)
+            {
+                centreView.move(camPos - prevCamPos);
+                prevCamPos = camPos;
+            }
+            window.clear();
+            ImGui::SFML::Update(window, deltaClock.restart());
+            window.setView(centreView);
 
-        ImGui::Begin("Update Rate");
-        
-        static int updatesPerFrame = 1;
-        ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
-        ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
-        std::string operations = std::to_string_with_precision(frameRate * float(updatesPerFrame * simulation.front().planetsLength * simulation.front().planetsLength));
-        int64_t outer = 0;
-        bool decimal = false;
-        for (auto iter = operations.end(); iter > operations.begin();iter--)
-        {
-            if (decimal)
-            {
-                if (outer % 3 == 0 && outer != 0)
-                    iter = operations.insert(iter, ',');
-            }
-            else if (operations[operations.length() - outer - 1] == '.')
-            {
-                decimal = true;
-                outer = -1;
-            }
-            outer++;
-        }
-        ImGui::Text(std::string("OPS:     " + operations).c_str());
-        ImGui::Text(std::string("PLANETS: " + std::to_string(simulation.front().planetsLength)).c_str());
-        ImGui::Text(std::string("Tick: " + std::to_string(simulation.front().tick)).c_str());
-        ImGui::Text(std::string("Forward Frames: " + std::to_string(simulation.size()-1)).c_str());
-        ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
-        ImGui::Checkbox(" :Threaded", &multi_threaded);
-        ImGui::Checkbox(" :Simd", &simd);
-        ImGui::Checkbox(" :Lock Framerate", &static_framerate);
-        ImGui::Checkbox(" :Planet Merging", &merging);
-        ImGui::Checkbox(" :Run Simulation", &runSimulation);
-        ImGui::Checkbox(" :Draw Plane", &drawPlane);
-        ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
-        ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
-        ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
-        ImGui::End();
-        frameClock.restart();
+            ImGui::Begin("Update Rate");
 
-        ImGui::Begin("Modify Planet");
-        ImGui::SliderInt(": ID", (int*)&selectedPlanet, 1, simulation.front().planetsLength);
-        if (PlanetOption temp = simulation.front().GetPlanet(selectedPlanet))
-        {
-            float smin = -1000;
-            float smax = 1000;
-            float dmin = -1.0;
-            float dmax = 1.0;
-            Planet planet = temp;
-            float px    = float(*planet.x);
-            float py    = float(*planet.y);
-            float pz    = float(*planet.z);
-            float pdx   = float(*planet.dx);
-            float pdy   = float(*planet.dy);
-            float pdz   = float(*planet.dz);
-            float pm    = float(*planet.mass);
-            ImGui::SliderFloat(": X",  &px,    smin, smax);
-            ImGui::SliderFloat(": Y",  &py,    smin, smax);
-            ImGui::SliderFloat(": Z",  &pz,    smin, smax);
-            ImGui::SliderFloat(": DX", &pdx,   dmin, dmax);
-            ImGui::SliderFloat(": DY", &pdy,   dmin, dmax);
-            ImGui::SliderFloat(": DZ", &pdz,   dmin, dmax);
-            ImGui::SliderFloat(": M",  &pm, 0.0001, 10,"%.3f",2.f);
-            if (ImGui::SliderFloat(": G", &G, 0.1, 10))
+            static int updatesPerFrame = 1;
+            ImGui::Text(std::string("FPS:     " + std::to_string_with_precision(frameRate)).c_str());
+            ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
+            std::string operations = std::to_string_with_precision(frameRate * float(updatesPerFrame * simulation.front().planetsLength * simulation.front().planetsLength));
+            int64_t outer = 0;
+            bool decimal = false;
+            for (auto iter = operations.end(); iter > operations.begin(); iter--)
             {
-                gravity = _mm256_set1_pd(G);
+                if (decimal)
+                {
+                    if (outer % 3 == 0 && outer != 0)
+                        iter = operations.insert(iter, ',');
+                }
+                else if (operations[operations.length() - outer - 1] == '.')
+                {
+                    decimal = true;
+                    outer = -1;
+                }
+                outer++;
             }
-            ImGui::SliderInt(": Tiers",    (int*)&tiers,    1, 4);
-            ImGui::SliderInt(": Children", (int*)&children, 1, 10);
-            ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
-            if (ImGui::Button("Remove Planet"))
-            {
-                simulation.front().RemovePlanet(selectedPlanet);
-            }
-            if (ImGui::Button("Add Planet"))
-            {
-                simulation.front().AddPlanet(smin, smin, 0, 0, 0, 0, 0.5);
-                selectedPlanet = simulation.front().planetsLength;
-            }
-            if (ImGui::Button("Add Random"))
-            {
-                simulation.front().AddRandomSatellite(selectedPlanet);
-            }
-            if (ImGui::Button("Add Universe"))
-            {
-                simulation.front().RecursivelyAddPlanets(selectedPlanet, children, tiers);
-            }
-            ImGui::Checkbox(": Follow Selected", &gotoSelected);
-        }
-        ImGui::End();
+            ImGui::Text(std::string("OPS:     " + operations).c_str());
+            ImGui::Text(std::string("PLANETS: " + std::to_string(simulation.front().planetsLength)).c_str());
+            ImGui::Text(std::string("Tick: " + std::to_string(simulation.front().tick)).c_str());
+            ImGui::Text(std::string("Forward Frames: " + std::to_string(simulation.size() - 1)).c_str());
+            ImGui::Text(std::string("Orbit spacing: " + std::to_string(tick_spacing)).c_str());
+            ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
+            ImGui::SliderInt(" :THREADS", &NUM_THREADS, 1, 20);
+            ImGui::Checkbox(" :Threaded", &multi_threaded);
+            ImGui::Checkbox(" :Simd", &simd);
+            ImGui::Checkbox(" :Lock Framerate", &static_framerate);
+            ImGui::Checkbox(" :Planet Merging", &merging);
+            ImGui::Checkbox(" :Run Simulation", &runSimulation);
+            ImGui::Checkbox(" :Draw Plane", &drawPlane);
+            ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
+            ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
+            ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
+            ImGui::End();
+            frameClock.restart();
 
-        if (forward_calculation)
-        {
-            while (simulation.size() < forward_calculation)
+            ImGui::Begin("Modify Planet");
+            ImGui::SliderInt(": ID", (int*)&selectedPlanet, 1, simulation.front().planetsLength);
+            if (PlanetOption temp = simulation.front().GetPlanetReference(selectedPlanet))
             {
-                /*if (multi_threaded)
+                float smin = -1000;
+                float smax = 1000;
+                float dmin = -1.0;
+                float dmax = 1.0;
+                PlanetReference planet = temp;
+                float px = float(*planet.x);
+                float py = float(*planet.y);
+                float pz = float(*planet.z);
+                float pdx = float(*planet.dx);
+                float pdy = float(*planet.dy);
+                float pdz = float(*planet.dz);
+                float pm = float(*planet.mass);
+                ImGui::SliderFloat(": X", &px, smin, smax);
+                ImGui::SliderFloat(": Y", &py, smin, smax);
+                ImGui::SliderFloat(": Z", &pz, smin, smax);
+                ImGui::SliderFloat(": DX", &pdx, dmin, dmax);
+                ImGui::SliderFloat(": DY", &pdy, dmin, dmax);
+                ImGui::SliderFloat(": DZ", &pdz, dmin, dmax);
+                ImGui::SliderFloat(": M", &pm, 0.0001, 1000, "%.3f", 2.f);
+                if (ImGui::SliderFloat(": G", &G, 0.1, 10))
+                {
+                    gravity = _mm256_set1_pd(G);
+                }
+                ImGui::SliderInt(": Tiers", (int*)&tiers, 1, 4);
+                ImGui::SliderInt(": Children", (int*)&children, 1, 10);
+                ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
+                if (ImGui::Button("Remove Planet"))
+                {
+                    simulation.front().RemovePlanet(selectedPlanet);
+                }
+                if (ImGui::Button("Add Planet"))
+                {
+                    simulation.front().AddPlanet(smin, smin, 0, 0, 0, 0, 0.5);
+                    selectedPlanet = simulation.front().planetsLength;
+                }
+                if (ImGui::Button("Add Random"))
+                {
+                    simulation.front().AddRandomSatellite(selectedPlanet);
+                }
+                if (ImGui::Button("Add Universe"))
+                {
+                    simulation.front().RecursivelyAddPlanets(selectedPlanet, children, tiers);
+                    simulation.front().MergeAllPlanets();
+                    while (simulation.size() > 1)
+                        simulation.pop_back();
+                }
+                if (ImGui::Button("Remove All But Selected"))
+                {
+                    PlanetObject saved = simulation.front().GetPlanetObject(selectedPlanet);
+                    simulation.front().planets.clear();
+                    simulation.front().planetsExtra.clear();
+                    simulation.front().planetsLength = 0;
+                    simulation.front().AddPlanet(saved);
+                    while (simulation.size() > 1)
+                        simulation.pop_back();
+                    selectedPlanet = 1;
+                }
+                ImGui::Checkbox(": Follow Selected", &gotoSelected);
+            }
+            ImGui::End();
+
+            if (forward_calculation)
+            {
+                while (simulation.size() < forward_calculation)
+                {
                     simulation.back().ThreadedUpdatePlanets(false);
-                else
-                    simulation.back().UpdatePlanets(false);
-                simulation.back().ApplyForces();*/
-                simulation.back().ThreadedUpdatePlanets(false);
-                SolarSystem new_system = SolarSystem(simulation.back());
-                new_system.tick++;
-                new_system.ApplyForces();
-                simulation.emplace_back(new_system);
+                    SolarSystem new_system = SolarSystem(simulation.back());
+                    new_system.tick++;
+                    new_system.ApplyForces();
+                    simulation.emplace_back(new_system);
+                }
             }
-        }
-        if (runSimulation)
-        {
-            if (simulation.front().tick < global_tick)
-                simulation.pop_front();
-            global_tick++;
-        }
-
-        //ImGui::ShowTestWindow();
-
-        {
-        window.popGLStates();
-
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        glLoadMatrixf(glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp));
-
-        // Draw a white grid "floor" for the tetrahedron to sit on.
-        glColor3f(1.0, 1.0, 1.0);
-
-        if (drawPlane)
-        {
-            glBegin(GL_LINES);
-            const float lines = 50;
-            const float gap = 0.5;
-            float dist = lines * gap * 0.5;
-            for (GLfloat i = -dist; i <= dist; i += gap) {
-                glVertex3f(i, 0, dist); glVertex3f(i, 0, -dist);
-                glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
-            }
-            glEnd();
-        }
-        int index = 0;
-        for (auto it = simulation.begin(); it != simulation.end(); it++)
-        {
-            if (it == simulation.begin())
+            if (runSimulation)
             {
-                simulation.front().DrawSolarSystem(false);
+                if (simulation.front().tick < global_tick)
+                    simulation.pop_front();
+                global_tick++;
             }
-            else if(index%10 == 0)
+
+            //ImGui::ShowTestWindow();
+
             {
-                it->DrawSolarSystem(true);
+                window.popGLStates();
+
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+                glLoadMatrixf(glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp));
+
+                // Draw a white grid "floor" for the tetrahedron to sit on.
+                glColor3f(1.0, 1.0, 1.0);
+
+                if (drawPlane)
+                {
+                    glBegin(GL_LINES);
+                    const float lines = 50;
+                    const float gap = 0.5;
+                    float dist = lines * gap * 0.5;
+                    for (GLfloat i = -dist; i <= dist; i += gap) {
+                        glVertex3f(i, 0, dist); glVertex3f(i, 0, -dist);
+                        glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
+                    }
+                    glEnd();
+                }
+                for (auto it = simulation.begin(); it != simulation.end(); it++)
+                {
+                    if (it == simulation.begin())
+                    {
+                        simulation.front().DrawSolarSystem(false);
+                    }
+                    else if (it->tick % tick_spacing == 0)
+                    {
+                        it->DrawSolarSystem(true);
+                    }
+                }
+                glCullFace(GL_FRONT);
+                glFlush();
+                window.pushGLStates();
             }
-            index++;
+            //sf::ContextSettings windowSettings = window.getSettings();
+            //std::cout << "windowSettings.DepthBits: " << windowSettings.depthBits << "\n";
+            ImGui::SFML::Render(window);
+            window.display();
         }
-        glCullFace(GL_FRONT);
-        glFlush();
-        window.pushGLStates();
-        }
-        //sf::ContextSettings windowSettings = window.getSettings();
-        //std::cout << "windowSettings.DepthBits: " << windowSettings.depthBits << "\n";
-        ImGui::SFML::Render(window);
-        window.display();
     }
 
     ImGui::SFML::Shutdown();
