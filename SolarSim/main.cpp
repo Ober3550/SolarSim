@@ -1,15 +1,16 @@
 #include <SFML/Graphics.hpp>
 #include "imgui.h"
 #include "imgui-SFML.h"
-
-#include <string>
+#include <fstream>
 #include <iostream>
+#include <string>
+#include <ostream>
 #include <experimental/filesystem>
-
 #include <immintrin.h>
-
 #include <sstream>
 #include <thread>
+#include <unordered_set>
+#include <mutex>
 
 namespace fs = std::experimental::filesystem;
 namespace std {
@@ -49,7 +50,8 @@ const int VECWIDTH = 8;
 const double pi = 2 * acos(0.0);
 float G = 4.f;
 const float zero = 0.f;
-const float m_r = 0.5f;
+const float m_r = 0.9f;
+const float base_zoom = 20.f;
 
 __m256 merge_r   = _mm256_set1_ps(m_r);
 __m256i m_zeroi  = _mm256_set1_epi32(0);
@@ -58,17 +60,20 @@ __m256 gravity = _mm256_set1_ps(G);
 
 int selectedPlanet = 1;
 bool gotoSelected = false;
-bool merging = false;
-bool multi_threaded = true;
+bool merging = true;
 bool simd = true;
+bool test_script = false;
 int NUM_THREADS = 4;
 sf::Vector2f camPos = { 0.f,0.f };
 
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int tiers = 2;
-int children = 95;
-bool static_framerate = true;
+int children = 150;
+bool static_framerate = false;
+int global_tick = 0;
+
+std::string results = "Test,SIMD,Threads,Time\n";
 
 struct Planet {
     int* id;
@@ -100,10 +105,22 @@ struct PlanetGroup {
     __m256 mass;
     __m256 r;
 };
+struct PlanetMerge {
+    int A;
+    int B;
+    operator int64_t() { 
+        return ((int64_t(this->A) << 32) | int32_t(this->B)); 
+    }
+    static PlanetMerge Decode(int64_t input) {
+        return PlanetMerge{ int32_t(input >> 32), int32_t(input & 0xFFFFFFFF) };
+    }
+};
 
 class SolarSystem {
-    std::vector<PlanetGroup> planets;
 public:
+    std::vector<PlanetGroup> planets;
+    std::unordered_set<int64_t> merger;
+    std::mutex merger_lock;
     int planetsLength = 0;
     void AddPlanet(float x, float y, float dx, float dy, float mass)
     {
@@ -148,41 +165,92 @@ public:
         }
         return PlanetOption();
     }
-    void RemovePlanet(int id)
+    // Removes the planets contents
+    void EmptyPlanet(int id)
     {
         id--;
         if (id / VECWIDTH < planets.size())
         {
             PlanetGroup* group = &planets[id / VECWIDTH];
-            PlanetGroup* lastGroup = &planets[(planetsLength-1) / VECWIDTH];
             int index = id % VECWIDTH;
-            if (id == planetsLength)
-                goto clear_planet;
-            if (PlanetOption temp = GetPlanet(planetsLength))
+            group->id.m256i_i32[index]  = 0;
+            group->x.m256_f32[index]    = 0.f;
+            group->y.m256_f32[index]    = 0.f;
+            group->dx.m256_f32[index]   = 0.f;
+            group->dy.m256_f32[index]   = 0.f;
+            group->Fx.m256_f32[index]   = 0.f;
+            group->Fy.m256_f32[index]   = 0.f;
+            group->mass.m256_f32[index] = 0.f;
+            group->r.m256_f32[index]    = 0.f;
+        }
+    }
+    // Removes the empty planets and packs everything 
+    // closer together to use less memory and processing
+    void RemoveHoles()
+    {
+        int prev_id = 0;
+        for (int i = 0; i < planets.size(); i++)
+        {
+            PlanetGroup* groupA = &planets[i];
+            for (int j = 0; j < VECWIDTH; j++)
             {
-                Planet lastPlanet = temp;
-                group->x.m256_f32   [index] = *lastPlanet.x;
-                group->y.m256_f32   [index] = *lastPlanet.y;
-                group->dx.m256_f32  [index] = *lastPlanet.dx;
-                group->dy.m256_f32  [index] = *lastPlanet.dy;
-                group->Fx.m256_f32  [index] = *lastPlanet.Fx;
-                group->Fy.m256_f32  [index] = *lastPlanet.Fy;
-                group->mass.m256_f32[index] = *lastPlanet.mass;
-                group->r.m256_f32   [index] = *lastPlanet.r;
+            next_hole:;
+                if (groupA->id.m256i_i32[j] == 0)
+                {
+                    for (int k = planets.size() - 1; k >= 0; k--)
+                    {
+                        PlanetGroup* groupB = &planets[k];
+                        for (int l = VECWIDTH - 1; l >= 0; l--)
+                        {
+                            if (i == k && j == l)
+                                goto reduce_vector;
+                            if (groupB->id.m256i_i32[l] != 0)
+                            {
+                                prev_id++;
+                                // Move planet into hole
+                                groupA->id.m256i_i32[j] = prev_id;
+                                groupA->x.m256_f32[j] = groupB->x.m256_f32[l];
+                                groupA->y.m256_f32[j] = groupB->y.m256_f32[l];
+                                groupA->dx.m256_f32[j] = groupB->dx.m256_f32[l];
+                                groupA->dy.m256_f32[j] = groupB->dy.m256_f32[l];
+                                groupA->Fx.m256_f32[j] = groupB->Fx.m256_f32[l];
+                                groupA->Fy.m256_f32[j] = groupB->Fy.m256_f32[l];
+                                groupA->mass.m256_f32[j] = groupB->mass.m256_f32[l];
+                                groupA->r.m256_f32[j] = groupB->r.m256_f32[l];
+                                // Empty the just moved planet
+                                groupB->id.m256i_i32[l] = 0;
+                                groupB->x.m256_f32[l] = 0.f;
+                                groupB->y.m256_f32[l] = 0.f;
+                                groupB->dx.m256_f32[l] = 0.f;
+                                groupB->dy.m256_f32[l] = 0.f;
+                                groupB->Fx.m256_f32[l] = 0.f;
+                                groupB->Fy.m256_f32[l] = 0.f;
+                                groupB->mass.m256_f32[l] = 0.f;
+                                groupB->r.m256_f32[l] = 0.f;
+                                planetsLength = ((planets.size()-1) * VECWIDTH) + l;
+                                goto next_hole;
+                            }
+                        }
+                    }
+                }
+                else
+                    prev_id = groupA->id.m256i_i32[j];
             }
-            // Don't forget to clear because simd will still do ops on these values
-            clear_planet:;
-            int lastIndex = (planetsLength - 1) % VECWIDTH;
-            lastGroup->id.m256i_i32[lastIndex] = 0;
-            lastGroup->x.m256_f32[lastIndex] = 0.f;
-            lastGroup->y.m256_f32[lastIndex] = 0.f;
-            lastGroup->dx.m256_f32[lastIndex] = 0.f;
-            lastGroup->dy.m256_f32[lastIndex] = 0.f;
-            lastGroup->Fx.m256_f32[lastIndex] = 0.f;
-            lastGroup->Fy.m256_f32[lastIndex] = 0.f;
-            lastGroup->mass.m256_f32[lastIndex] = 0.f;
-            lastGroup->r.m256_f32[lastIndex] = 0.f;
-            planetsLength--;
+        }
+    reduce_vector:;
+        for (int k = planets.size() - 1; k >= 0; k--)
+        {
+            PlanetGroup* groupB = &planets[k];
+            for (int l = VECWIDTH - 1; l >= 0; l--)
+            {
+                if (groupB->id.m256i_i32[l] == 0)
+                {
+                    if (l == 0)
+                        planets.pop_back();
+                }
+                else
+                    return;
+            }
         }
     }
     void AddRandomSatellite(int id) {
@@ -206,7 +274,7 @@ public:
             float new_y = (*parent.y) + sin(angle) * magni;
             float new_dx;
             float new_dy;
-            float scalar = sqrt(G*((*parent.mass) + 0.5f * children * new_mass));
+            float scalar = sqrt(0.5f*G*((*parent.mass) + 0.5f * children * new_mass));
             new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
             new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
             AddPlanet(new_x, new_y, new_dx, new_dy, new_mass);
@@ -277,9 +345,11 @@ public:
                 Planet planetA = tempA;
                 Planet planetB = tempB;
                 float total_mass = *planetA.mass + *planetB.mass;
-                float relative_mass = (*planetB.mass / *planetA.mass) * 0.5f;
-                *planetA.x += (*planetB.x - *planetA.x) * relative_mass;
-                *planetA.y += (*planetB.y - *planetA.y) * relative_mass;
+                if (*planetA.mass < * planetB.mass)
+                {
+                    *planetA.x = *planetB.x;
+                    *planetA.y = *planetB.y;
+                }
                 *planetA.dx = ((*planetA.dx) * (*planetA.mass) + *planetB.dx * *planetB.mass) / total_mass;
                 *planetA.dy = ((*planetA.dy) * (*planetA.mass) + *planetB.dy * *planetB.mass) / total_mass;
                 *planetA.mass = total_mass;
@@ -287,92 +357,99 @@ public:
                 if (idB == selectedPlanet)
                     selectedPlanet = idA;
                 // Remove planet B
-                RemovePlanet(idB);
+                EmptyPlanet(idB);
             }
         }
     }
-    void MergeAllPlanets(const int start, const int end)
+    void ThreadedCheckMerge(const int start, int end)
     {
-        int start2 = (start - 1) / VECWIDTH;
-        int end2 = end / VECWIDTH;
-        for (int i = start2; i < end2; i++)
+        if (end > planets.size()) end = planets.size();
+        for (int i = start; i < end; i++)
         {
             PlanetGroup* groupA = &planets[i];
             for (int j = 0; j < VECWIDTH; j++)
             {
                 if (groupA->id.m256i_i32[j] != 0)
                 {
-                    for (int k = 0; k < planetsLength / VECWIDTH; k++)
+                    __m256 planetA_x = _mm256_set1_ps(groupA->x.m256_f32[j]);
+                    __m256 planetA_y = _mm256_set1_ps(groupA->y.m256_f32[j]);
+                    __m256 planetA_r = _mm256_set1_ps(groupA->r.m256_f32[j]);
+                    for (PlanetGroup& groupB : planets)
                     {
-                        PlanetGroup* groupB = &planets[k];
+                        __m256 rx = _mm256_sub_ps(planetA_x, groupB.x);
+                        __m256 ry = _mm256_sub_ps(planetA_y, groupB.y);
+                        rx = _mm256_mul_ps(rx, rx);
+                        ry = _mm256_mul_ps(ry, ry);
+                        __m256 r2 = _mm256_add_ps(rx, ry);
+                        __m256 r = _mm256_sqrt_ps(r2);
+                        __m256 prox = _mm256_mul_ps(merge_r, _mm256_add_ps(planetA_r, groupB.r));
                         for (int l = 0; l < VECWIDTH; l++)
                         {
-                            if (groupB->id.m256i_i32[l] != 0 && groupA->id.m256i_i32[j] != groupB->id.m256i_i32[l])
+                            if (r.m256_f32[l] < prox.m256_f32[l])
                             {
-                                float rx = ((groupB->x.m256_f32[l]) - groupA->x.m256_f32[j]);
-                                float ry = ((groupB->y.m256_f32[l]) - groupA->y.m256_f32[j]);
-                                float r2 = (rx * rx) + (ry * ry);
-                                // Check if planets merge
-                                float mass_r2 = ((groupA->r.m256_f32[j] + groupB->r.m256_f32[l]) * m_r) * ((groupA->r.m256_f32[j] + groupB->r.m256_f32[l]) * m_r);
-                                if (r2 < mass_r2)
+                                if (groupB.id.m256i_i32[l] != 0)
                                 {
-                                    MergePlanets(groupA->id.m256i_i32[j], groupB->id.m256i_i32[l]);
-                                    j--;
-                                    goto check_again;
+                                    int ida = groupA->id.m256i_i32[j];
+                                    int idb = groupB.id.m256i_i32[l];
+                                    if (ida > idb)
+                                    {
+                                        int temp = ida;
+                                        ida = idb;
+                                        idb = temp;
+                                    }
+                                    if (ida != idb)
+                                    {
+                                        merger_lock.lock();
+                                        merger.insert(PlanetMerge{ ida,idb });
+                                        merger_lock.unlock();
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            check_again:;
             }
         }
     }
-    void UpdatePlanets()
+    void ThreadedMergePlanets()
     {
-        // F = (G * m1 * m2) / r^2
-        // F = ma
-        // a = m / F;
-        // a = m / ((G * m * m2) / r^2)
-        if(merging)
-            MergeAllPlanets(1, planetsLength);
-        for (int i = 1; i <= planetsLength; i++)
+        std::vector<std::thread> threads;
+        int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
+        if (NUM_THREADS == 1)
+            block_size = planets.size();
+        for (int i = 0; i < NUM_THREADS; i++)
         {
-            if (PlanetOption tempA = GetPlanet(i))
-            {
-                Planet planetA = tempA;
-                for (int j = 1; j <= planetsLength; j++)
-                {
-                    if (PlanetOption tempB = GetPlanet(j))
-                    {
-                        Planet planetB = tempB;
-                        if (*planetA.id != *planetB.id)
-                        {
-                            float rx = ((*planetB.x) - (*planetA.x));
-                            float ry = ((*planetB.y) - (*planetA.y));
-                            float r2 = pow(rx, 2) + pow(ry, 2);
-                            float F = (G * (*planetA.mass) * (*planetB.mass)) / r2;
-                            *planetA.Fx += F * rx;
-                            *planetA.Fy += F * ry;
-                        }
-                    }
-                }
-            }
+            threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                system->ThreadedCheckMerge(start, end);
+                }, this, i * block_size, (i + 1) * block_size));
         }
-        // Separate applying forces and velocity since it's O(n)
-        for (int i = 0; i < planetsLength / VECWIDTH + 1; i++)
+        for (int i = 0; i < NUM_THREADS; i++)
         {
-            PlanetGroup* groupA = &planets[i];
+            threads[i].join();
+        }
+        for (int64_t temp : merger)
+        {
+            PlanetMerge merge = PlanetMerge::Decode(temp);
+            MergePlanets(merge.A, merge.B);
+        }
+        merger.clear();
+        RemoveHoles();
+    }
+    void ApplyForces()
+    {
+        // Separate applying forces and velocity since it's O(n)
+        for (PlanetGroup& groupA : planets)
+        {
             for (int j = 0; j < VECWIDTH; j++)
             {
-                if (groupA->id.m256i_i32[j] != 0)
+                if (groupA.id.m256i_i32[j] != 0)
                 {
-                    groupA->dx.m256_f32[j] += groupA->Fx.m256_f32[j] / groupA->mass.m256_f32[j];
-                    groupA->dy.m256_f32[j] += groupA->Fy.m256_f32[j] / groupA->mass.m256_f32[j];
-                    groupA->x.m256_f32[j] += groupA->dx.m256_f32[j];
-                    groupA->y.m256_f32[j] += groupA->dy.m256_f32[j];
-                    groupA->Fx.m256_f32[j] = 0.f;
-                    groupA->Fy.m256_f32[j] = 0.f;
+                    groupA.dx.m256_f32[j]+= groupA.Fx.m256_f32[j] / groupA.mass.m256_f32[j];
+                    groupA.dy.m256_f32[j]+= groupA.Fy.m256_f32[j] / groupA.mass.m256_f32[j];
+                    groupA.x.m256_f32[j] += groupA.dx.m256_f32[j];
+                    groupA.y.m256_f32[j] += groupA.dy.m256_f32[j];
+                    groupA.Fx.m256_f32[j] = 0.f;
+                    groupA.Fy.m256_f32[j] = 0.f;
                 }
             }
         }
@@ -409,6 +486,19 @@ public:
                     }
                 }
             }
+        }
+    }
+    void SimdApplyForces()
+    {
+        // Separate applying forces and velocity since it's O(n)
+        for (PlanetGroup& groupA : planets)
+        {
+            groupA.dx = _mm256_add_ps(groupA.dx, _mm256_div_ps(groupA.Fx, groupA.mass));
+            groupA.dy = _mm256_add_ps(groupA.dy, _mm256_div_ps(groupA.Fy, groupA.mass));
+            groupA.x = _mm256_add_ps(groupA.x, groupA.dx);
+            groupA.y = _mm256_add_ps(groupA.y, groupA.dy);
+            groupA.Fx = _mm256_set1_ps(0.f);
+            groupA.Fy = _mm256_set1_ps(0.f);
         }
     }
     void SimdThreaded(const int start, int end)
@@ -473,137 +563,36 @@ public:
         // I don't think this can be multithreaded since it relies on removing elements being thread safe... 
         // which is obvious why it wouldn't be
         if(merging)
-            MergeAllPlanets(1, planetsLength);
+            ThreadedMergePlanets();
 
         // Seems like threads don't like to be moved or recreated
         std::vector<std::thread> threads;
-        if (planetsLength < 32)
-            UpdatePlanetsSimd();
+        int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
+        if (NUM_THREADS == 1)
+            block_size = planets.size();
+        for (int i = 0; i < NUM_THREADS; i++)
+        {
+            if (simd)
+            {
+                threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                    system->SimdThreaded(start, end);
+                    }, this, i * block_size, (i + 1) * block_size));
+            }
+            else
+            {
+                threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                    system->Threaded(start, end);
+                    }, this, i * block_size, (i + 1) * block_size));
+            }
+        }
+        for (int i = 0; i < NUM_THREADS; i++)
+        {
+            threads[i].join();
+        }
+        if (simd)
+            SimdApplyForces();
         else
-        {
-            int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
-            for (int i = 0; i < NUM_THREADS; i++)
-            {
-                if (simd)
-                {
-                    threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
-                        system->SimdThreaded(start, end);
-                        }, this, i * block_size, (i + 1) * block_size));
-                }
-                else
-                {
-                    threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
-                        system->Threaded(start, end);
-                        }, this, i * block_size, (i + 1) * block_size));
-                }
-            }
-            for (int i = 0; i < NUM_THREADS; i++)
-            {
-                threads[i].join();
-            }
-
-            // Separate applying forces and velocity since it's O(n)
-            for (int i = 0; i < planetsLength / VECWIDTH + 1; i++)
-            {
-                PlanetGroup* groupA = &planets[i];
-                for (int j = 0; j < VECWIDTH; j++)
-                {
-                    if (groupA->id.m256i_i32[j] != 0)
-                    {
-                        groupA->dx.m256_f32[j] += groupA->Fx.m256_f32[j] / groupA->mass.m256_f32[j];
-                        groupA->dy.m256_f32[j] += groupA->Fy.m256_f32[j] / groupA->mass.m256_f32[j];
-                        groupA->x.m256_f32[j] += groupA->dx.m256_f32[j];
-                        groupA->y.m256_f32[j] += groupA->dy.m256_f32[j];
-                        groupA->Fx.m256_f32[j] = 0.f;
-                        groupA->Fy.m256_f32[j] = 0.f;
-                    }
-                }
-            }
-        }
-    }
-    void UpdatePlanetsSimd()
-    {
-        if(merging)
-            MergeAllPlanets(1, planetsLength);
-        for (int i = 0; i < planets.size(); i++)
-        {
-            PlanetGroup* groupA = &planets[i];
-            for (int j = 0; j < VECWIDTH; j++)
-            {
-                if (groupA->id.m256i_i32[j] <= planetsLength && groupA->id.m256i_i32[j] > 0)
-                {
-                    __m256 planetA_x = _mm256_set1_ps(groupA->x.m256_f32[j]);
-                    __m256 planetA_y = _mm256_set1_ps(groupA->y.m256_f32[j]);
-                    __m256 planetA_mass = _mm256_set1_ps(groupA->mass.m256_f32[j]);
-                    __m256 planetA_r = _mm256_set1_ps(groupA->r.m256_f32[j]);
-                    __m256i planetA_id = _mm256_set1_epi32(groupA->id.m256i_i32[j]);
-                    __m256 planetA_Fx = _mm256_set1_ps(zero);
-                    __m256 planetA_Fy = _mm256_set1_ps(zero);
-                    int planet_id = groupA->id.m256i_i32[j];
-
-                    for (int k = 0; k < planets.size(); k++)
-                    {
-                        const PlanetGroup* groupB = &planets[k];
-                        // Subtract planet As position from groups positions to find relative distance
-                        // Find the square of each distance
-                        // Code readibility may suffer due to functions not being optimized such that
-                        // Simd vectors aren't being stored in registers properly and may be passed to cache or stack preemtively
-                        __m256 rx = _mm256_sub_ps(groupB->x, planetA_x);
-                        __m256 rx2 = _mm256_mul_ps(rx, rx);
-                        __m256 ry = _mm256_sub_ps(groupB->y, planetA_y);
-                        __m256 ry2 = _mm256_mul_ps(ry, ry);
-                        // Find the radius squared
-                        __m256 r2 = _mm256_add_ps(rx2, ry2);
-
-                        // Calculate gravity
-                        __m256 mass = _mm256_mul_ps(groupB->mass, planetA_mass);
-                        __m256 gm = _mm256_mul_ps(mass, gravity);
-                        // Find the forces for each dimension
-                        __m256 F = _mm256_div_ps(gm, r2);
-                        __m256 Fx;
-                        __m256 Fy;
-                        Fx = _mm256_mul_ps(F, rx);
-                        Fy = _mm256_mul_ps(F, ry);
-
-                        // Remove nan values such as planets affecting themselves
-                        // If id == 0
-                        __m256i zeromask = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
-                        __m256i idmask = _mm256_cmpeq_epi32(groupB->id, planetA_id);
-                        // If groupA.id == groupB.id
-                        __m256i bothmask = _mm256_or_si256(zeromask, idmask);
-                        bothmask = _mm256_xor_si256(bothmask, m_onesi);
-                        Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(bothmask));
-                        Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(bothmask));
-
-                        // Apply the forces 
-                        planetA_Fx = _mm256_add_ps(planetA_Fx, Fx);
-                        planetA_Fy = _mm256_add_ps(planetA_Fy, Fy);
-                    }
-                    for (int l = 0; l < VECWIDTH; l++)
-                    {
-                        groupA->Fx.m256_f32[j] += planetA_Fx.m256_f32[l];
-                        groupA->Fy.m256_f32[j] += planetA_Fy.m256_f32[l];
-                    }
-                }
-            }
-        }
-        // Separate applying forces and velocity since it's O(n)
-        for (int i = 0; i < planetsLength / VECWIDTH + 1; i++)
-        {
-            PlanetGroup* groupA = &planets[i];
-            for (int j = 0; j < VECWIDTH; j++)
-            {
-                if (groupA->id.m256i_i32[j] != 0)
-                {
-                    groupA->dx.m256_f32[j] += groupA->Fx.m256_f32[j] / groupA->mass.m256_f32[j];
-                    groupA->dy.m256_f32[j] += groupA->Fy.m256_f32[j] / groupA->mass.m256_f32[j];
-                    groupA->x.m256_f32[j] += groupA->dx.m256_f32[j];
-                    groupA->y.m256_f32[j] += groupA->dy.m256_f32[j];
-                    groupA->Fx.m256_f32[j] = 0.f;
-                    groupA->Fy.m256_f32[j] = 0.f;
-                }
-            }
-        }
+            ApplyForces();
     }
 };
 
@@ -629,7 +618,7 @@ int main()
     centreView.setSize(sf::Vector2f(size.x, size.y));
     centreView.setCenter(0, 0);
     float prevZoom = 1.f;
-    float zoom = 1.f;
+    float zoom = base_zoom;
     sf::Vector2f prevCamPos = { 0.f,0.f };
     sf::Vector2f mousePos = { 0.f,0.f };
     uint8_t KEYW = 1;
@@ -638,15 +627,20 @@ int main()
     uint8_t KEYD = 8;
     uint8_t pressed = 0;
 
-    bool simulating = false;
+    bool simulating = true;
     float max_ops = 0.f;
+    int test_num = 0;
+    int result_num = 0;
+    float frameRate = 0.f;
     
-    srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
+    //srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
+    srand(200);
     SolarSystem system;
     //system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-    //system.MergeAllPlanets(1, system.planetsLength);
+    //system.ThreadedMergePlanets();
+    bool running = true;
 
-    while (window.isOpen()) {
+    while (running && window.isOpen()) {
         sf::Event event;
         while (window.pollEvent(event)) {
             ImGui::SFML::ProcessEvent(event);
@@ -682,7 +676,7 @@ int main()
                 centreView.setSize(sf::Vector2f(size.x, size.y));
                 centreView.setCenter(0, 0);
                 prevZoom = 1.f;
-                zoom = 1.f;
+                zoom = base_zoom;
             }
             else if (event.type == sf::Event::MouseWheelScrolled)
             {
@@ -727,11 +721,10 @@ int main()
         ImGui::SFML::Update(window, deltaClock.restart());
 
         ImGui::Begin("Update Rate");
-        float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
         static int updatesPerFrame = 1;
         ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
         ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
-        float num_ops = frameRate * float(updatesPerFrame * system.planetsLength * system.planetsLength);
+        double num_ops = frameRate * double(int64_t(updatesPerFrame) * int64_t(system.planetsLength) * int64_t(system.planetsLength));
         std::string operations = add_commas(std::to_string_with_precision(num_ops));
         if (simulating)
         {
@@ -746,30 +739,38 @@ int main()
         ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
         ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
         ImGui::SliderInt(" :Threads", &NUM_THREADS, 1, 20);
-        ImGui::Checkbox(" :Threaded", &multi_threaded);
         ImGui::Checkbox(" :Simd", &simd);
         ImGui::Checkbox(" :Lock Framerate", &static_framerate);
         ImGui::Checkbox(" :Planet Merging", &merging);
         ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
         ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
         ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
+        
+        if (ImGui::Button("Run Tests"))
+        {
+            NUM_THREADS = std::thread::hardware_concurrency();
+            test_script = true;
+        }
+        if (test_script) ImGui::Text(std::string("Running").c_str());
         ImGui::End();
-        frameClock.restart();
 
         ImGui::Begin("Modify Planet");
         ImGui::SliderInt(": ID", &selectedPlanet, 1, system.planetsLength);
         if (PlanetOption temp = system.GetPlanet(selectedPlanet))
         {
-            float smin = -1000;
-            float smax = 1000;
-            float dmin = -1.0;
-            float dmax = 1.0;
+            float smin = -1000000;
+            float smax = 1000000;
+            float dmin = -1000.0;
+            float dmax = 1000.0;
             Planet planet = temp;
             ImGui::SliderFloat(": X",  planet.x,    smin, smax);
             ImGui::SliderFloat(": Y",  planet.y,    smin, smax);
             ImGui::SliderFloat(": DX", planet.dx,   dmin, dmax);
             ImGui::SliderFloat(": DY", planet.dy,   dmin, dmax);
-            ImGui::SliderFloat(": M",  planet.mass, 0.0001, 10,"%.3f",2.f);
+            if (ImGui::SliderFloat(": M", planet.mass, 0.001, 10000, "%.3f", 2.f))
+            {
+                *planet.r = sqrt(*planet.mass / pi) * 128.f;
+            }
             if (ImGui::SliderFloat(": G", &G, 0.1, 10))
             {
                 gravity = _mm256_set1_ps(G);
@@ -779,7 +780,7 @@ int main()
             ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
             if (ImGui::Button("Remove Planet"))
             {
-                system.RemovePlanet(selectedPlanet);
+                system.EmptyPlanet(selectedPlanet);
             }
             if (ImGui::Button("Add Planet"))
             {
@@ -793,13 +794,15 @@ int main()
             if (ImGui::Button("Add Universe"))
             {
                 system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-                system.MergeAllPlanets(1, system.planetsLength);
+                system.ThreadedMergePlanets();
             }
             ImGui::Checkbox(": Follow Selected", &gotoSelected);
+            ImGui::Checkbox(": Run Simulation", &simulating);
         }
-        if (!ImGui::IsAnyWindowFocused())
+        ImGui::End();
+        
+        if (simulating)
         {
-            simulating = true;
             if (static_framerate)
             {
                 if (updatesPerFrame > 1 && frameRate < 50.f)
@@ -807,25 +810,9 @@ int main()
                 else if (updatesPerFrame < 50 && frameRate > 55.f)
                     updatesPerFrame++;
             }
-            if (!multi_threaded)
-                for (int i = 0; i < updatesPerFrame; i++)
-                {
-                    if (simd)
-                        system.UpdatePlanetsSimd();
-                    else
-                        system.UpdatePlanets();
-                }
-            else
-                for (int i = 0; i < updatesPerFrame; i++)
-                    system.ThreadedUpdatePlanets();
+            for (int i = 0; i < updatesPerFrame; i++)
+                system.ThreadedUpdatePlanets();
         }
-        else
-        {
-            simulating = false;
-        }
-
-        ImGui::End();
-
         //ImGui::ShowTestWindow();
 
         std::vector<sf::Sprite> sprites = system.DrawSolarSystem();
@@ -839,6 +826,45 @@ int main()
        
         ImGui::SFML::Render(window);
         window.display();
+        frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
+        if (test_script)
+        {
+            if (global_tick > 5)
+            {
+                result_num++;
+                test_num++;
+                results += std::to_string(result_num) + ","
+                    + (simd ? "true," : "false,")
+                    + std::to_string(NUM_THREADS) + ","
+                    + std::to_string(frameClock.getElapsedTime().asMicroseconds()) + "\n";
+                if (test_num == 4)
+                {
+                    if (NUM_THREADS != 1)
+                        NUM_THREADS--;
+                    else
+                    {
+                        if (simd)
+                        {
+                            NUM_THREADS = std::thread::hardware_concurrency();
+                            simd = false;
+                        }
+                        else
+                        {
+                            std::ofstream myfile;
+                            myfile.open("results.csv", std::ios::out | std::ios::trunc | std::ios::binary);
+                            if (myfile.is_open())
+                            {
+                                myfile << results;
+                            }
+                            running = false;
+                        }
+                    }
+                    test_num = 0;
+                }
+            }
+            global_tick++;
+        }
+        frameClock.restart();
     }
 
     ImGui::SFML::Shutdown();
