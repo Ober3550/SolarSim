@@ -52,7 +52,7 @@ bool gotoSelected = false;
 bool merging = false;
 bool multi_threaded = true;
 bool simd = true;
-int forward_calculation = 100;
+int forward_calculation = 2000;
 int tick_spacing = 10;
 sf::Vector2f camPos = { 0.f,0.f };
 
@@ -97,13 +97,13 @@ struct PlanetObject {
     double y;
     double z;
     double mass;
+    double r;
     double dx;
     double dy;
     double dz;
     double Fx;
     double Fy;
     double Fz;
-    double r;
 };
 
 struct PlanetReference {
@@ -112,13 +112,13 @@ struct PlanetReference {
     double* y;
     double* z;
     double* mass;
+    double* r;
     double* dx;
     double* dy;
     double* dz;
     double* Fx;
     double* Fy;
     double* Fz;
-    double* r;
 };
 
 struct PlanetOption {
@@ -134,6 +134,7 @@ struct PlanetGroup {
     __m256d y;
     __m256d z;
     __m256d mass;
+    __m256d r;
 };
 
 struct PlanetGroupExtra {
@@ -143,7 +144,6 @@ struct PlanetGroupExtra {
     __m256d Fx;
     __m256d Fy;
     __m256d Fz;
-    __m256d r;
 };
 
 sf::Color HSV2RGB(sf::Color input)
@@ -188,13 +188,13 @@ public:
         group->y.m256d_f64[index] = y;
         group->z.m256d_f64[index] = z;
         group->mass.m256d_f64[index] = mass;
+        group->r.m256d_f64[index] = sqrt(mass / pi) * 128.f;
         groupExtra->dx.m256d_f64[index] = dx;
         groupExtra->dy.m256d_f64[index] = dy;
         groupExtra->dz.m256d_f64[index] = dz;
         groupExtra->Fx.m256d_f64[index] = Fx;
         groupExtra->Fy.m256d_f64[index] = Fy;
         groupExtra->Fz.m256d_f64[index] = Fz;
-        groupExtra->r.m256d_f64[index]  = sqrt(mass/pi) * 128.f;
         planetsLength++;
     }
     void AddPlanet(PlanetObject planet)
@@ -215,13 +215,13 @@ public:
                 group->y.m256d_f64[index],
                 group->z.m256d_f64[index],
                 group->mass.m256d_f64[index],
+                group->r.m256d_f64[index],
                 groupExtra->dx.m256d_f64[index],
                 groupExtra->dy.m256d_f64[index],
                 groupExtra->dz.m256d_f64[index],
                 groupExtra->Fx.m256d_f64[index],
                 groupExtra->Fy.m256d_f64[index],
-                groupExtra->Fz.m256d_f64[index],
-                groupExtra->r.m256d_f64[index]
+                groupExtra->Fz.m256d_f64[index]
             };
             return new_planet;
         }
@@ -231,26 +231,52 @@ public:
         id--;
         if (id / VECWIDTH < planets.size())
         {
-            PlanetGroup*      group      = &planets[id / VECWIDTH];
-            PlanetGroupExtra* groupExtra = &planetsExtra[id / VECWIDTH];
-            int64_t index = id % VECWIDTH;
-            PlanetReference planet = { 
-                & group->id.m256i_i64[index],
-                & group->x.m256d_f64[index],
-                & group->y.m256d_f64[index],
-                & group->z.m256d_f64[index],
-                & group->mass.m256d_f64[index],
-                & groupExtra->dx.m256d_f64[index],
-                & groupExtra->dy.m256d_f64[index],
-                & groupExtra->dz.m256d_f64[index],
-                & groupExtra->Fx.m256d_f64[index],
-                & groupExtra->Fy.m256d_f64[index],
-                & groupExtra->Fz.m256d_f64[index],
-                & groupExtra->r.m256d_f64[index]
-            };
-            // Check for uninitialized planet
-            if (group->id.m256i_i64[index] == 0)
-                return PlanetOption();
+            PlanetReference planet;
+            if (planetsExtra.size() > 0)
+            {
+                PlanetGroup* group = &planets[id / VECWIDTH];
+                PlanetGroupExtra* groupExtra = &planetsExtra[id / VECWIDTH];
+                int64_t index = id % VECWIDTH;
+                planet = PlanetReference{
+                    &group->id.m256i_i64[index],
+                    &group->x.m256d_f64[index],
+                    &group->y.m256d_f64[index],
+                    &group->z.m256d_f64[index],
+                    &group->mass.m256d_f64[index],
+                    &group->r.m256d_f64[index],
+                    &groupExtra->dx.m256d_f64[index],
+                    &groupExtra->dy.m256d_f64[index],
+                    &groupExtra->dz.m256d_f64[index],
+                    &groupExtra->Fx.m256d_f64[index],
+                    &groupExtra->Fy.m256d_f64[index],
+                    &groupExtra->Fz.m256d_f64[index],
+                };
+                // Check for uninitialized planet
+                if (group->id.m256i_i64[index] == 0)
+                    return PlanetOption();
+            }
+            else
+            {
+                PlanetGroup* group = &planets[id / VECWIDTH];
+                int64_t index = id % VECWIDTH;
+                planet = PlanetReference{
+                    &group->id.m256i_i64[index],
+                    &group->x.m256d_f64[index],
+                    &group->y.m256d_f64[index],
+                    &group->z.m256d_f64[index],
+                    &group->mass.m256d_f64[index],
+                    &group->r.m256d_f64[index],
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                    nullptr,
+                };
+                // Check for uninitialized planet
+                if (group->id.m256i_i64[index] == 0)
+                    return PlanetOption();
+            }
             return PlanetOption{ true,planet };
         }
         return PlanetOption();
@@ -275,13 +301,13 @@ public:
                     group->y.m256d_f64[index] = *lastPlanet.y;
                     group->z.m256d_f64[index] = *lastPlanet.z;
                     group->mass.m256d_f64[index] = *lastPlanet.mass;
+                    group->r.m256d_f64[index] = *lastPlanet.r;
                     groupExtra->dx.m256d_f64[index] = *lastPlanet.dx;
                     groupExtra->dy.m256d_f64[index] = *lastPlanet.dy;
                     groupExtra->dz.m256d_f64[index] = *lastPlanet.dz;
                     groupExtra->Fx.m256d_f64[index] = *lastPlanet.Fx;
                     groupExtra->Fy.m256d_f64[index] = *lastPlanet.Fy;
                     groupExtra->Fz.m256d_f64[index] = *lastPlanet.Fz;
-                    groupExtra->r.m256d_f64[index] = *lastPlanet.r;
                 }
             }
             // Don't forget to clear because simd will still do ops on these values
@@ -292,13 +318,13 @@ public:
             lastGroup->y.m256d_f64[lastIndex] = 0.f;
             lastGroup->z.m256d_f64[lastIndex] = 0.f;
             lastGroup->mass.m256d_f64[lastIndex] = 0.f;
+            lastGroup->r.m256d_f64[lastIndex] = 0.f;
             lastGroupExtra->dx.m256d_f64[lastIndex] = 0.f;
             lastGroupExtra->dy.m256d_f64[lastIndex] = 0.f;
             lastGroupExtra->dz.m256d_f64[lastIndex] = 0.f;
             lastGroupExtra->Fx.m256d_f64[lastIndex] = 0.f;
             lastGroupExtra->Fy.m256d_f64[lastIndex] = 0.f;
             lastGroupExtra->Fz.m256d_f64[lastIndex] = 0.f;
-            lastGroupExtra->r.m256d_f64[lastIndex] = 0.f;
             planetsLength--;
         }
     }
@@ -435,7 +461,7 @@ public:
                                     double rz = ((groupB->z.m256d_f64[l]) - groupA->z.m256d_f64[j]);
                                     double r2 = (rx * rx) + (ry * ry) + (rz * rz);
                                     // Check if planets merge
-                                    double mass_r2 = ((groupAExtra->r.m256d_f64[j] + groupBExtra->r.m256d_f64[l]) * merge_r) * ((groupAExtra->r.m256d_f64[j] + groupBExtra->r.m256d_f64[l]) * merge_r);
+                                    double mass_r2 = ((groupA->r.m256d_f64[j] + groupB->r.m256d_f64[l]) * merge_r) * ((groupA->r.m256d_f64[j] + groupB->r.m256d_f64[l]) * merge_r);
                                     if (r2 < mass_r2)
                                     {
                                         MergePlanets(groupA->id.m256i_i64[j], groupB->id.m256i_i64[l]);
@@ -710,6 +736,7 @@ int main()
     uint8_t KEYS = 2;
     uint8_t KEYA = 4;
     uint8_t KEYD = 8;
+    uint8_t KEYCTRL = 16;
     uint8_t pressed = 0;
     
     // Opengl stuff -------------------------------
@@ -774,41 +801,49 @@ int main()
             ImGui::SFML::ProcessEvent(event);
             if (event.type == sf::Event::KeyPressed)
             {
-                const float cameraSpeed = 0.05f; // adjust accordingly
+                
                 switch (event.key.code)
                 {
+                case sf::Keyboard::LControl: {
+                    pressed |= KEYCTRL;
+                }break;
                 case sf::Keyboard::E: {
                     cursorGrabbed = !cursorGrabbed;
                     sf::Mouse::setPosition(sf::Vector2i(windowMiddle.x, windowMiddle.y), window);
                 }break;
                 case sf::Keyboard::W: {
-                    cameraPos += cameraSpeed * cameraFront;
                     pressed |= KEYW;
                 }break;
                 case sf::Keyboard::S: {
-                    cameraPos -= cameraSpeed * cameraFront;
                     pressed |= KEYS;
                 }break;
                 case sf::Keyboard::A: {
-                    cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
                     pressed |= KEYA;
                 }break;
                 case sf::Keyboard::D: {
-                    cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
                     pressed |= KEYD;
                 }break;
                 }
             }
             else if (event.type == sf::Event::KeyReleased)
             {
-                if (event.key.code == sf::Keyboard::W)
+                switch(event.key.code){
+                case sf::Keyboard::LControl: {
+                    pressed &= (0xff ^ KEYCTRL);
+                }break;
+                case sf::Keyboard::W: {
                     pressed &= (0xff ^ KEYW);
-                else if (event.key.code == sf::Keyboard::S)
+                }break;
+                case sf::Keyboard::S: {
                     pressed &= (0xff ^ KEYS);
-                else if (event.key.code == sf::Keyboard::A)
+                }break;
+                case sf::Keyboard::A: {
                     pressed &= (0xff ^ KEYA);
-                else if (event.key.code == sf::Keyboard::D)
+                }break;
+                case sf::Keyboard::D: {
                     pressed &= (0xff ^ KEYD);
+                }break;
+                }
             }
             else if (event.type == sf::Event::MouseMoved)
             {
@@ -871,6 +906,24 @@ int main()
             else if (event.type == sf::Event::Closed) {
                 running = false;
             }
+        }
+        const float cameraSpeed = 0.05f; // adjust accordingly
+        float accelerate = (1.f + float(pressed & KEYCTRL));
+        if (pressed & KEYW)
+        {
+            cameraPos += cameraSpeed * cameraFront * accelerate;
+        }
+        if (pressed & KEYS)
+        {
+            cameraPos -= cameraSpeed * cameraFront * accelerate;
+        }
+        if (pressed & KEYA)
+        {
+            cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed * accelerate;
+        }
+        if (pressed & KEYD)
+        {
+            cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed * accelerate;
         }
         if (running)
         {
@@ -955,16 +1008,16 @@ int main()
                 float px = float(*planet.x);
                 float py = float(*planet.y);
                 float pz = float(*planet.z);
-                float pdx = float(*planet.dx);
+                /*float pdx = float(*planet.dx);
                 float pdy = float(*planet.dy);
-                float pdz = float(*planet.dz);
+                float pdz = float(*planet.dz);*/
                 float pm = float(*planet.mass);
                 ImGui::SliderFloat(": X", &px, smin, smax);
                 ImGui::SliderFloat(": Y", &py, smin, smax);
                 ImGui::SliderFloat(": Z", &pz, smin, smax);
-                ImGui::SliderFloat(": DX", &pdx, dmin, dmax);
+                /*ImGui::SliderFloat(": DX", &pdx, dmin, dmax);
                 ImGui::SliderFloat(": DY", &pdy, dmin, dmax);
-                ImGui::SliderFloat(": DZ", &pdz, dmin, dmax);
+                ImGui::SliderFloat(": DZ", &pdz, dmin, dmax);*/
                 ImGui::SliderFloat(": M", &pm, 0.0001, 1000, "%.3f", 2.f);
                 if (ImGui::SliderFloat(": G", &G, 0.1, 10))
                 {
@@ -1021,9 +1074,12 @@ int main()
             }
             if (runSimulation)
             {
-                if (simulation.front().tick < global_tick)
-                    simulation.pop_front();
-                global_tick++;
+                for (int i = 0; i < updatesPerFrame; i++)
+                {
+                    if (simulation.front().tick < global_tick)
+                        simulation.pop_front();
+                    global_tick++;
+                }
             }
 
             //ImGui::ShowTestWindow();
