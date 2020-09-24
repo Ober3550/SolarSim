@@ -801,47 +801,11 @@ int main()
             ImGui::SFML::ProcessEvent(event);
             if (event.type == sf::Event::KeyPressed)
             {
-                
                 switch (event.key.code)
                 {
-                case sf::Keyboard::LControl: {
-                    pressed |= KEYCTRL;
-                }break;
                 case sf::Keyboard::E: {
                     cursorGrabbed = !cursorGrabbed;
                     sf::Mouse::setPosition(sf::Vector2i(windowMiddle.x, windowMiddle.y), window);
-                }break;
-                case sf::Keyboard::W: {
-                    pressed |= KEYW;
-                }break;
-                case sf::Keyboard::S: {
-                    pressed |= KEYS;
-                }break;
-                case sf::Keyboard::A: {
-                    pressed |= KEYA;
-                }break;
-                case sf::Keyboard::D: {
-                    pressed |= KEYD;
-                }break;
-                }
-            }
-            else if (event.type == sf::Event::KeyReleased)
-            {
-                switch(event.key.code){
-                case sf::Keyboard::LControl: {
-                    pressed &= (0xff ^ KEYCTRL);
-                }break;
-                case sf::Keyboard::W: {
-                    pressed &= (0xff ^ KEYW);
-                }break;
-                case sf::Keyboard::S: {
-                    pressed &= (0xff ^ KEYS);
-                }break;
-                case sf::Keyboard::A: {
-                    pressed &= (0xff ^ KEYA);
-                }break;
-                case sf::Keyboard::D: {
-                    pressed &= (0xff ^ KEYD);
                 }break;
                 }
             }
@@ -908,20 +872,20 @@ int main()
             }
         }
         const float cameraSpeed = 0.05f; // adjust accordingly
-        float accelerate = (1.f + float(pressed & KEYCTRL));
-        if (pressed & KEYW)
+        float accelerate = (1.f + float(sf::Keyboard::isKeyPressed(sf::Keyboard::LControl)));
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::W))
         {
             cameraPos += cameraSpeed * cameraFront * accelerate;
         }
-        if (pressed & KEYS)
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::S))
         {
             cameraPos -= cameraSpeed * cameraFront * accelerate;
         }
-        if (pressed & KEYA)
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::A))
         {
             cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed * accelerate;
         }
-        if (pressed & KEYD)
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::D))
         {
             cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed * accelerate;
         }
