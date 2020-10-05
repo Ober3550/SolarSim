@@ -58,7 +58,6 @@ namespace std {
 
 int NUM_THREADS = std::thread::hardware_concurrency();
 
-sf::Texture circle;
 const int64_t VECWIDTH = 4;
 const double pi = 2 * acos(0.0);
 float G = 4.f;
@@ -83,6 +82,60 @@ bool static_framerate = false;
 bool runSimulation = true;
 bool drawPlane = false;
 int global_tick = 0;
+
+const std::vector<std::array<float, 3>> box_vert = { {
+    {-.5f,-.5f,-.5f},
+    {-.5f,.5f,-.5f},
+    {-.5f,.5f,.5f},
+    {-.5f,-.5f,.5f},
+    {.5f,-.5f,.5f},
+    {.5f,.5f,.5f},
+    {.5f,.5f,-.5f},
+    {.5f,-.5f,-.5f}
+} };
+
+const std::vector<std::array<int, 3>> box_face = { {
+    {0,1,2},
+    {2,3,0},
+    {5,4,3},
+    {3,2,5},
+    {4,5,6},
+    {6,7,4},
+    {1,0,7},
+    {7,6,1},
+    {0,3,4},
+    {4,7,0},
+    {6,5,2},
+    {2,1,6}
+} };
+
+void drawWireFrame(const std::vector<std::array<float, 3>> vert, const std::vector<std::array<int, 3>>& tri, const float scale = 1.f)
+{
+    glBegin(GL_LINES);
+    for (int i = 0; i < tri.size(); i++)
+    {
+        glVertex3f(vert[tri[i][0]][0] * scale, vert[tri[i][0]][1] * scale, vert[tri[i][0]][2] * scale);
+        glVertex3f(vert[tri[i][1]][0] * scale, vert[tri[i][1]][1] * scale, vert[tri[i][1]][2] * scale);
+        glVertex3f(vert[tri[i][1]][0] * scale, vert[tri[i][1]][1] * scale, vert[tri[i][1]][2] * scale);
+        glVertex3f(vert[tri[i][2]][0] * scale, vert[tri[i][2]][1] * scale, vert[tri[i][2]][2] * scale);
+        glVertex3f(vert[tri[i][2]][0] * scale, vert[tri[i][2]][1] * scale, vert[tri[i][2]][2] * scale);
+        glVertex3f(vert[tri[i][0]][0] * scale, vert[tri[i][0]][1] * scale, vert[tri[i][0]][2] * scale);
+    }
+    glEnd();
+}
+void drawFilled(const std::vector<std::array<float, 3>>& vert, const std::vector<std::array<int, 3>>& tri, const float scale = 1.f)
+{
+    glBegin(GL_TRIANGLES);
+    for (int i = 0; i < tri.size(); i++)
+    {
+        for (int j = 0; j < 3; j++)
+        {
+            glNormal3f(vert[tri[i][j]][0], vert[tri[i][j]][1], vert[tri[i][j]][2]);
+            glVertex3f(vert[tri[i][j]][0] * scale, vert[tri[i][j]][1] * scale, vert[tri[i][j]][2] * scale);
+        }
+    }
+    glEnd();
+}
 
 void drawSphere(double r, int lats, int longs) {
     int i, j = 0;
@@ -412,11 +465,12 @@ public:
             if (PlanetOption temp = GetPlanetReference(i))
             {
                 PlanetReference planet = temp;
-                const float scale = 1.f/10000.f;
+                const float scale = 1.f/100.f;
                 glPushMatrix();
+                glScalef(scale, scale, scale);
                 glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
                 if (static_radius)
-                    drawSphere(100.f * scale, 2, 4);
+                    drawFilled(box_vert,box_face);
                 else
                     drawSphere(*planet.r * scale, 10, 10);
                 glPopMatrix();
@@ -733,14 +787,6 @@ int main()
     window.setFramerateLimit(60);
     ImGui::SFML::Init(window);
 
-    // Just for debugging
-    /*for (const auto& entry : fs::directory_iterator(fs::current_path()))
-    {
-        std::cout << entry.path() << '\n';
-    }*/
-
-    circle.loadFromFile("circle.png");
-
     sf::View centreView;
     sf::Vector2u windowSize = window.getSize();
     sf::Vector2i windowMiddle = sf::Vector2i(windowSize.x / 2, windowSize.y / 2);
@@ -981,12 +1027,6 @@ int main()
                     *planet.dy = double(pdy);
                     *planet.dz = double(pdz);
                     *planet.mass = double(pm);
-                    /*if (forward_calculation <= 500)
-                    {
-                        while (simulation.size() > 1)
-                            simulation.pop_back();
-                        recalculate_frames = true;
-                    }*/
                 }
                 if (ImGui::Button("Recalculate Frames"))
                 {
@@ -1039,7 +1079,7 @@ int main()
                     simulation.pop_back();
                 }
 
-                while (simulation.size() <= forward_calculation)
+                while (simulation.size() <= forward_calculation + updatesPerFrame)
                 {
                     simulation.back().ThreadedUpdatePlanets(false);
                     SolarSystem new_system = SolarSystem(simulation.back());
@@ -1080,7 +1120,9 @@ int main()
                     const float gap = 0.5;
                     float dist = lines * gap * 0.5;
                     for (GLfloat i = -dist; i <= dist; i += gap) {
+                        glNormal3f(0.f, 1.f, 0.f);
                         glVertex3f(i, 0, dist); glVertex3f(i, 0, -dist);
+                        glNormal3f(0.f, 1.f, 0.f);
                         glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
                     }
                     glEnd();
@@ -1100,14 +1142,10 @@ int main()
                 glFlush();
                 window.pushGLStates();
             }
-            //sf::ContextSettings windowSettings = window.getSettings();
-            //std::cout << "windowSettings.DepthBits: " << windowSettings.depthBits << "\n";
             ImGui::SFML::Render(window);
             window.display();
         }
     }
-
     ImGui::SFML::Shutdown();
-    
     return 0;
 }
