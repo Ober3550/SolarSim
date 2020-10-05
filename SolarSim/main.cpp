@@ -32,6 +32,28 @@ namespace std {
         out << fixed << a_value;
         return out.str();
     }
+    template <typename T>
+    string to_string_with_formatting(const T a_value, const int64_t n = 2)
+    {
+        std::string operations = std::to_string_with_precision(a_value);
+        int64_t outer = 0;
+        bool decimal = false;
+        for (auto iter = operations.end(); iter > operations.begin(); iter--)
+        {
+            if (decimal)
+            {
+                if (outer % 3 == 0 && outer != 0)
+                    iter = operations.insert(iter, ',');
+            }
+            else if (operations[operations.length() - outer - 1] == '.')
+            {
+                decimal = true;
+                outer = -1;
+            }
+            outer++;
+        }
+        return operations;
+    }
 }
 
 int NUM_THREADS = std::thread::hardware_concurrency();
@@ -48,16 +70,13 @@ __m256i m_onesi  = _mm256_set1_epi64x(uint64_t(-1));
 __m256d gravity  = _mm256_set1_pd(G);
 
 int64_t selectedPlanet = 1;
-bool gotoSelected = false;
 bool merging = false;
 bool multi_threaded = true;
 bool simd = true;
-int forward_calculation = 2000;
+int forward_calculation = 1;
 int tick_spacing = 10;
 sf::Vector2f camPos = { 0.f,0.f };
 
-const float minZoom = 0.5;
-const float maxZoom = 256.f;
 int64_t tiers = 1;
 int64_t children = 40;
 bool static_framerate = false;
@@ -726,10 +745,11 @@ int main()
     sf::Vector2u windowSize = window.getSize();
     sf::Vector2i windowMiddle = sf::Vector2i(windowSize.x / 2, windowSize.y / 2);
     bool cursorGrabbed = true;
+    bool recalculate_frames = false;
+    bool time_recalculation = false;
+    std::string recalc_time = "Recalculated in ";
     centreView.setSize(sf::Vector2f(windowSize.x, windowSize.y));
     centreView.setCenter(0, 0);
-    float prevZoom = 1.f;
-    float zoom = 1.f;
     sf::Vector2f prevCamPos = { 0.f,0.f };
     sf::Vector2f mousePos = { 0.f,0.f };
     uint8_t KEYW = 1;
@@ -790,8 +810,8 @@ int main()
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     std::list<SolarSystem> simulation;
     SolarSystem system = SolarSystem(0);
-    system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-    system.MergeAllPlanets();
+    //system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+    //system.MergeAllPlanets();
     simulation.emplace_back(system);
 
     bool running = true;
@@ -853,19 +873,6 @@ int main()
                 glFrustum(-frustRight * ratio, frustRight * ratio, -frustUp, frustUp, nearClip, farClip);
                 glMatrixMode(GL_MODELVIEW);
                 window.pushGLStates();
-                prevZoom = 1.f;
-                zoom = 1.f;
-            }
-            else if (event.type == sf::Event::MouseWheelScrolled)
-            {
-                if (event.mouseWheelScroll.delta != 0)
-                {
-                    zoom -= event.mouseWheelScroll.delta * 1.f;
-                    if (zoom < minZoom)
-                        zoom = minZoom;
-                    if (zoom > maxZoom)
-                        zoom = maxZoom;
-                }
             }
             else if (event.type == sf::Event::Closed) {
                 running = false;
@@ -892,29 +899,6 @@ int main()
         if (running)
         {
             float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
-            const float move_speed = 50.f;
-            for (int64_t i = 0; i < 4; i++)
-            {
-                if ((pressed >> i) & 1)
-                {
-                    if (i < 2)
-                        camPos.y += move_speed * zoom * ((i & 1) ? 1.f : -1.f) / (frameRate / 60);
-                    else
-                        camPos.x += move_speed * zoom * ((i & 1) ? 1.f : -1.f) / (frameRate / 60);
-                }
-            }
-            if (prevZoom != zoom)
-            {
-                if (zoom < prevZoom)
-                    camPos += (mousePos * prevZoom * 2.f * (prevZoom / zoom));
-                centreView.zoom(pow(zoom / prevZoom, 2));
-                prevZoom = zoom;
-            }
-            if (prevCamPos != camPos)
-            {
-                centreView.move(camPos - prevCamPos);
-                prevCamPos = camPos;
-            }
             window.clear();
             ImGui::SFML::Update(window, deltaClock.restart());
             window.setView(centreView);
@@ -922,41 +906,44 @@ int main()
             ImGui::Begin("Update Rate");
 
             static int updatesPerFrame = 1;
+            ImGui::PushItemWidth(150);
+            //ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
+            //ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
             ImGui::Text(std::string("FPS:     " + std::to_string_with_precision(frameRate)).c_str());
             ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
-            std::string operations = std::to_string_with_precision(frameRate * float(updatesPerFrame * simulation.front().planetsLength * simulation.front().planetsLength));
-            int64_t outer = 0;
-            bool decimal = false;
-            for (auto iter = operations.end(); iter > operations.begin(); iter--)
-            {
-                if (decimal)
-                {
-                    if (outer % 3 == 0 && outer != 0)
-                        iter = operations.insert(iter, ',');
-                }
-                else if (operations[operations.length() - outer - 1] == '.')
-                {
-                    decimal = true;
-                    outer = -1;
-                }
-                outer++;
-            }
-            ImGui::Text(std::string("OPS:     " + operations).c_str());
-            ImGui::Text(std::string("PLANETS: " + std::to_string(simulation.front().planetsLength)).c_str());
+            ImGui::Text(std::string("OPS:     " + std::to_string_with_formatting(frameRate * float(updatesPerFrame * simulation.front().planetsLength * simulation.front().planetsLength))).c_str());
             ImGui::Text(std::string("Tick: " + std::to_string(simulation.front().tick)).c_str());
-            ImGui::Text(std::string("Forward Frames: " + std::to_string(simulation.size() - 1)).c_str());
-            ImGui::Text(std::string("Orbit spacing: " + std::to_string(tick_spacing)).c_str());
-            ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
-            ImGui::SliderInt(" :THREADS", &NUM_THREADS, 1, 20);
-            ImGui::Checkbox(" :Threaded", &multi_threaded);
-            ImGui::Checkbox(" :Simd", &simd);
-            ImGui::Checkbox(" :Lock Framerate", &static_framerate);
-            ImGui::Checkbox(" :Planet Merging", &merging);
-            ImGui::Checkbox(" :Run Simulation", &runSimulation);
-            ImGui::Checkbox(" :Draw Plane", &drawPlane);
-            ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
-            ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
-            ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
+            
+            ImGui::SliderInt(":UPF", &updatesPerFrame, 1, 50);
+            ImGui::SliderInt(":THREADS", &NUM_THREADS, 1, 20);
+            //ImGui::Checkbox(" :Threaded", &multi_threaded);
+            //ImGui::Checkbox(" :Simd", &simd);
+            //ImGui::Checkbox(" :Lock Framerate", &static_framerate);
+            if (ImGui::SliderInt(":Forward Frames", &forward_calculation, 1, 2000))
+            {
+                recalculate_frames = true;
+            }
+            ImGui::SliderInt(":Orbit spacing", &tick_spacing, 1, 50);
+            if (ImGui::SliderFloat(":Gravity", &G, 0.1, 10))
+            {
+                gravity = _mm256_set1_pd(G);
+            }
+            ImGui::Checkbox(":Planet Merging", &merging);
+            ImGui::Checkbox(":Run Simulation", &runSimulation);
+            ImGui::Checkbox(":Draw Plane", &drawPlane);
+            if (time_recalculation) 
+            {
+                if (frameClock.getElapsedTime().asMilliseconds() > 1000)
+                {
+                    recalc_time = std::string("Recalculated in " + std::to_string_with_formatting(frameClock.getElapsedTime().asSeconds()) + "s");
+                }
+                else
+                {
+                    recalc_time = std::string("Recalculated in " + std::to_string_with_formatting(frameClock.getElapsedTime().asMilliseconds()) + "ms");
+                }
+                time_recalculation = false;
+            }
+            ImGui::Text(recalc_time.c_str());
             ImGui::End();
             frameClock.restart();
 
@@ -964,70 +951,95 @@ int main()
             ImGui::SliderInt(": ID", (int*)&selectedPlanet, 1, simulation.front().planetsLength);
             if (PlanetOption temp = simulation.front().GetPlanetReference(selectedPlanet))
             {
-                float smin = -1000;
-                float smax = 1000;
-                float dmin = -1.0;
-                float dmax = 1.0;
+                bool modified = false;
+                float smin = -100000;
+                float smax = 100000;
+                float dmin = -50.0;
+                float dmax = 50.0;
                 PlanetReference planet = temp;
                 float px = float(*planet.x);
                 float py = float(*planet.y);
                 float pz = float(*planet.z);
-                /*float pdx = float(*planet.dx);
+                float pdx = float(*planet.dx);
                 float pdy = float(*planet.dy);
-                float pdz = float(*planet.dz);*/
-                float pm = float(*planet.mass);
-                ImGui::SliderFloat(": X", &px, smin, smax);
-                ImGui::SliderFloat(": Y", &py, smin, smax);
-                ImGui::SliderFloat(": Z", &pz, smin, smax);
-                /*ImGui::SliderFloat(": DX", &pdx, dmin, dmax);
-                ImGui::SliderFloat(": DY", &pdy, dmin, dmax);
-                ImGui::SliderFloat(": DZ", &pdz, dmin, dmax);*/
-                ImGui::SliderFloat(": M", &pm, 0.0001, 1000, "%.3f", 2.f);
-                if (ImGui::SliderFloat(": G", &G, 0.1, 10))
-                {
-                    gravity = _mm256_set1_pd(G);
+                float pdz = float(*planet.dz);
+                float pm  = float(*planet.mass);
+                modified |= ImGui::SliderFloat(": Mass", &pm, 0.0001, 1000, "%.3f", 2.f);
+                ImGui::Text("Position:");
+                modified |= ImGui::SliderFloat(": X", &px, smin, smax, "%.3f", 2.f);
+                modified |= ImGui::SliderFloat(": Y", &py, smin, smax, "%.3f", 2.f);
+                modified |= ImGui::SliderFloat(": Z", &pz, smin, smax, "%.3f", 2.f);
+                ImGui::Text("Velocity:");
+                modified |= ImGui::SliderFloat(": DX", &pdx, dmin, dmax, "%.3f", 2.f);
+                modified |= ImGui::SliderFloat(": DY", &pdy, dmin, dmax, "%.3f", 2.f);
+                modified |= ImGui::SliderFloat(": DZ", &pdz, dmin, dmax, "%.3f", 2.f);
+                if (modified) {
+                    *planet.x = double(px);
+                    *planet.y = double(py);
+                    *planet.z = double(pz);
+                    *planet.dx = double(pdx);
+                    *planet.dy = double(pdy);
+                    *planet.dz = double(pdz);
+                    *planet.mass = double(pm);
+                    /*if (forward_calculation <= 500)
+                    {
+                        while (simulation.size() > 1)
+                            simulation.pop_back();
+                        recalculate_frames = true;
+                    }*/
                 }
-                ImGui::SliderInt(": Tiers", (int*)&tiers, 1, 4);
-                ImGui::SliderInt(": Children", (int*)&children, 1, 10);
-                ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
-                if (ImGui::Button("Remove Planet"))
+                if (ImGui::Button("Recalculate Frames"))
                 {
-                    simulation.front().RemovePlanet(selectedPlanet);
-                }
-                if (ImGui::Button("Add Planet"))
-                {
-                    simulation.front().AddPlanet(smin, smin, 0, 0, 0, 0, 0.5);
-                    selectedPlanet = simulation.front().planetsLength;
-                }
-                if (ImGui::Button("Add Random"))
-                {
-                    simulation.front().AddRandomSatellite(selectedPlanet);
-                }
-                if (ImGui::Button("Add Universe"))
-                {
-                    simulation.front().RecursivelyAddPlanets(selectedPlanet, children, tiers);
-                    simulation.front().MergeAllPlanets();
                     while (simulation.size() > 1)
                         simulation.pop_back();
+                    recalculate_frames = true;
                 }
-                if (ImGui::Button("Remove All But Selected"))
-                {
-                    PlanetObject saved = simulation.front().GetPlanetObject(selectedPlanet);
-                    simulation.front().planets.clear();
-                    simulation.front().planetsExtra.clear();
-                    simulation.front().planetsLength = 0;
-                    simulation.front().AddPlanet(saved);
-                    while (simulation.size() > 1)
-                        simulation.pop_back();
-                    selectedPlanet = 1;
-                }
-                ImGui::Checkbox(": Follow Selected", &gotoSelected);
             }
             ImGui::End();
 
-            if (forward_calculation)
+            ImGui::Begin("Manipulate Universe");
+            ImGui::PushItemWidth(150);
+            ImGui::Text(std::string("Planets: " + std::to_string(simulation.front().planetsLength)).c_str());
+            ImGui::Text(std::string("Planet "+std::to_string(selectedPlanet)+" is the parent").c_str());
+            ImGui::SliderInt(": Tiers", (int*)&tiers, 1, 4);
+            ImGui::SliderInt(": Children", (int*)&children, 1, 10);
+            ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
+            if (ImGui::Button("Remove Planet"))
             {
-                while (simulation.size() < forward_calculation)
+                simulation.front().RemovePlanet(selectedPlanet);
+            }
+            if (ImGui::Button("Add Universe"))
+            {
+                simulation.front().RecursivelyAddPlanets(selectedPlanet, children, tiers);
+                simulation.front().MergeAllPlanets();
+                while (simulation.size() > 1)
+                    simulation.pop_back();
+            }
+            if (ImGui::Button("Remove All But One"))
+            {
+                PlanetObject saved = simulation.front().GetPlanetObject(selectedPlanet);
+                simulation.front().planets.clear();
+                simulation.front().planetsExtra.clear();
+                simulation.front().planetsLength = 0;
+                simulation.front().AddPlanet(saved);
+                while (simulation.size() > 1)
+                    simulation.pop_back();
+                selectedPlanet = 1;
+            }
+            ImGui::End();
+            
+            if (recalculate_frames || !ImGui::IsAnyWindowFocused())
+            {
+                if (recalculate_frames)
+                {
+                    time_recalculation = true;
+                }
+                while (simulation.size() > forward_calculation)
+                {
+                    simulation.pop_back();
+                }
+
+                while (simulation.size() <= forward_calculation)
                 {
                     simulation.back().ThreadedUpdatePlanets(false);
                     SolarSystem new_system = SolarSystem(simulation.back());
@@ -1035,18 +1047,21 @@ int main()
                     new_system.ApplyForces();
                     simulation.emplace_back(new_system);
                 }
+                recalculate_frames = false;
             }
-            if (runSimulation)
+            if (!ImGui::IsAnyWindowFocused())
             {
-                for (int i = 0; i < updatesPerFrame; i++)
+                if (runSimulation)
                 {
-                    if (simulation.front().tick < global_tick)
-                        simulation.pop_front();
-                    global_tick++;
+                    for (int i = 0; i < updatesPerFrame; i++)
+                    {
+                        if (simulation.front().tick < global_tick)
+                            simulation.pop_front();
+                        global_tick++;
+                    }
                 }
             }
-
-            //ImGui::ShowTestWindow();
+            //ImGui::ShowDemoWindow();
 
             {
                 window.popGLStates();
