@@ -80,18 +80,18 @@ int64_t tiers = 1;
 int64_t children = 40;
 bool static_framerate = false;
 bool runSimulation = true;
-bool drawPlane = false;
+bool drawPlane = true;
 int global_tick = 0;
 
 const std::vector<std::array<float, 3>> box_vert = { {
-    {-.5f,-.5f,-.5f},
-    {-.5f,.5f,-.5f},
-    {-.5f,.5f,.5f},
-    {-.5f,-.5f,.5f},
-    {.5f,-.5f,.5f},
-    {.5f,.5f,.5f},
-    {.5f,.5f,-.5f},
-    {.5f,-.5f,-.5f}
+    {-1.f,-1.f,-1.f},
+    {-1.f,1.f,-1.f},
+    {-1.f,1.f,1.f},
+    {-1.f,-1.f,1.f},
+    {1.f,-1.f,1.f},
+    {1.f,1.f,1.f},
+    {1.f,1.f,-1.f},
+    {1.f,-1.f,-1.f}
 } };
 
 const std::vector<std::array<int, 3>> box_face = { {
@@ -470,7 +470,9 @@ public:
                 glScalef(scale, scale, scale);
                 glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
                 if (static_radius)
-                    drawFilled(box_vert,box_face);
+                {
+                    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, &box_face[0]);
+                }
                 else
                     drawSphere(*planet.r * scale, 10, 10);
                 glPopMatrix();
@@ -783,7 +785,7 @@ int main()
     sf::Clock deltaClock;
     sf::Clock frameClock;
 
-    sf::RenderWindow window(sf::VideoMode(1000, 1000), "ImGui + SFML = <3", sf::Style::Default, sf::ContextSettings(32));
+    sf::RenderWindow window(sf::VideoMode(1000, 1000), "Solar Simulator", sf::Style::Default, sf::ContextSettings(32));
     window.setFramerateLimit(60);
     ImGui::SFML::Init(window);
 
@@ -1132,18 +1134,29 @@ int main()
                     if (it == simulation.begin())
                     {
                         simulation.front().DrawSolarSystem(false);
+                        glEnableClientState(GL_VERTEX_ARRAY);
+                        glEnableClientState(GL_NORMAL_ARRAY);
+                        glVertexPointer(3, GL_FLOAT, 3 * sizeof(float), &box_vert[0]);
+                        glNormalPointer(GL_FLOAT, 3 * sizeof(float), &box_vert[0]);
                     }
                     else if (it->tick % tick_spacing == 0)
                     {
                         it->DrawSolarSystem(true);
                     }
                 }
+                glDisableClientState(GL_VERTEX_ARRAY);
+                glDisableClientState(GL_NORMAL_ARRAY);
                 glCullFace(GL_FRONT);
                 glFlush();
                 window.pushGLStates();
             }
             ImGui::SFML::Render(window);
             window.display();
+
+            GLenum error = glGetError();
+            if (error != GL_NO_ERROR) {
+                std::cout << std::to_string(error);
+            }
         }
     }
     ImGui::SFML::Shutdown();
