@@ -109,6 +109,56 @@ const std::vector<std::array<int, 3>> box_face = { {
     {2,1,6}
 } };
 
+const std::vector<std::array<float, 3>> box_array = { {
+    {-1.f,-1.f,-1.f},   // 0
+    {-1.f,1.f,-1.f},    // 1
+    {-1.f,1.f,1.f},     // 2
+
+    {-1.f,1.f,1.f},     // 2
+    {-1.f,-1.f,1.f},    // 3
+    {-1.f,-1.f,-1.f},   // 0
+
+    {1.f,1.f,1.f},      // 5
+    {1.f,-1.f,1.f},     // 4
+    {-1.f,-1.f,1.f},    // 3
+
+    {-1.f,-1.f,1.f},    // 3
+    {-1.f,1.f,1.f},     // 2
+    {1.f,1.f,1.f},      // 5
+
+    {1.f,-1.f,1.f},     // 4
+    {1.f,1.f,1.f},      // 5
+    {1.f,1.f,-1.f},     // 6
+
+    {1.f,1.f,-1.f},     // 6
+    {1.f,-1.f,-1.f},    // 7
+    {1.f,-1.f,1.f},     // 4
+
+    {-1.f,1.f,-1.f},    // 1
+    {-1.f,-1.f,-1.f},   // 0
+    {1.f,-1.f,-1.f},    // 7
+
+    {1.f,-1.f,-1.f},    // 7
+    {1.f,1.f,-1.f},     // 6
+    {-1.f,1.f,-1.f},    // 1
+
+    {-1.f,-1.f,-1.f},   // 0
+    {-1.f,-1.f,1.f},    // 3
+    {1.f,-1.f,1.f},     // 4
+    
+    {1.f,-1.f,1.f},     // 4
+    {1.f,-1.f,-1.f},    // 7
+    {-1.f,-1.f,-1.f},   // 0
+
+    {1.f,1.f,-1.f},     // 6
+    {1.f,1.f,1.f},      // 5
+    {-1.f,1.f,1.f},     // 2
+
+    {-1.f,1.f,1.f},     // 2
+    {-1.f,1.f,-1.f},    // 1
+    {1.f,1.f,-1.f},     // 6
+} };
+
 void drawWireFrame(const std::vector<std::array<float, 3>> vert, const std::vector<std::array<int, 3>>& tri, const float scale = 1.f)
 {
     glBegin(GL_LINES);
@@ -471,7 +521,8 @@ public:
                 glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
                 if (static_radius)
                 {
-                    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, &box_face[0]);
+                    glDrawArrays(GL_TRIANGLES, 0, 36);
+                    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, &box_face[0]);
                 }
                 else
                     drawSphere(*planet.r * scale, 10, 10);
@@ -1128,6 +1179,14 @@ int main()
                         glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
                     }
                     glEnd();
+
+                    /*glEnableClientState(GL_VERTEX_ARRAY);
+                    glEnableClientState(GL_NORMAL_ARRAY);
+                    glVertexPointer(3, GL_FLOAT, 3 * sizeof(float), &box_array[0]);
+                    glNormalPointer(GL_FLOAT, 3 * sizeof(float), &box_array[0]);
+                    glDrawArrays(GL_TRIANGLES, 0, 36);
+                    glDisableClientState(GL_VERTEX_ARRAY);
+                    glDisableClientState(GL_NORMAL_ARRAY);*/
                 }
                 for (auto it = simulation.begin(); it != simulation.end(); it++)
                 {
@@ -1136,8 +1195,8 @@ int main()
                         simulation.front().DrawSolarSystem(false);
                         glEnableClientState(GL_VERTEX_ARRAY);
                         glEnableClientState(GL_NORMAL_ARRAY);
-                        glVertexPointer(3, GL_FLOAT, 3 * sizeof(float), &box_vert[0]);
-                        glNormalPointer(GL_FLOAT, 3 * sizeof(float), &box_vert[0]);
+                        glVertexPointer(3, GL_FLOAT, 3 * sizeof(float), &box_array[0]);
+                        glNormalPointer(GL_FLOAT, 3 * sizeof(float), &box_array[0]);
                     }
                     else if (it->tick % tick_spacing == 0)
                     {
@@ -1146,6 +1205,7 @@ int main()
                 }
                 glDisableClientState(GL_VERTEX_ARRAY);
                 glDisableClientState(GL_NORMAL_ARRAY);
+                
                 glCullFace(GL_FRONT);
                 glFlush();
                 window.pushGLStates();
