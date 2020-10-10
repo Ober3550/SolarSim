@@ -57,7 +57,6 @@ namespace std {
 }
 
 int NUM_THREADS = std::thread::hardware_concurrency();
-
 const int64_t VECWIDTH = 4;
 const double pi = 2 * acos(0.0);
 float G = 4.f;
@@ -72,7 +71,7 @@ int64_t selectedPlanet = 1;
 bool merging = false;
 bool multi_threaded = true;
 bool simd = true;
-int forward_calculation = 1;
+int forward_calculation = 2000;
 int tick_spacing = 10;
 sf::Vector2f camPos = { 0.f,0.f };
 
@@ -174,6 +173,7 @@ void drawWireFrame(const std::vector<std::array<float, 3>> vert, const std::vect
     }
     glEnd();
 }
+
 void drawFilled(const std::vector<std::array<float, 3>>& vert, const std::vector<std::array<int, 3>>& tri, const float scale = 1.f)
 {
     glBegin(GL_TRIANGLES);
@@ -188,8 +188,9 @@ void drawFilled(const std::vector<std::array<float, 3>>& vert, const std::vector
     glEnd();
 }
 
-void drawSphere(double r, int lats, int longs) {
-    int i, j = 0;
+void drawSphere() {
+    int lats = 10, longs = 10;
+    int i = 10, j = 0;
     for (i = 0; i <= lats; i++) {
         double lat0 = pi * (-0.5 + (double)(i - 1) / lats);
         double z0 = sin(lat0);
@@ -206,9 +207,9 @@ void drawSphere(double r, int lats, int longs) {
             double y = sin(lng);
 
             glNormal3f(x * zr0, y * zr0, z0);
-            glVertex3f(r * x * zr0, r * y * zr0, r * z0);
+            glVertex3f(x * zr0, y * zr0, z0);
             glNormal3f(x * zr1, y * zr1, z1);
-            glVertex3f(r * x * zr1, r * y * zr1, r * z1);
+            glVertex3f(x * zr1, y * zr1, z1);
         }
         glEnd();
     }
@@ -303,6 +304,15 @@ public:
     void AddPlanet(PlanetObject planet)
     {
         AddPlanet(planet.x, planet.y, planet.z, planet.dx, planet.dy, planet.dz, planet.mass, planet.Fx, planet.Fy, planet.Fz);
+    }
+    SolarSystem(int tick)
+    {
+        this->tick = tick;
+        if (!tick)
+        {
+            AddPlanet(0, 0, 0, 0, 50, 0, 1000);
+            AddPlanet(5000, 0, 0, 0, -50, 0, 1000);
+        }
     }
     PlanetObject GetPlanetObject(int64_t id)
     {
@@ -431,7 +441,6 @@ public:
             planetsLength--;
         }
     }
-    // Presentation
     void AddRandomSatellite(int64_t id) {
         if (PlanetOption temp = GetPlanetReference(id))
         {
@@ -481,37 +490,6 @@ public:
         for (int64_t i = 0; i < parents.size(); i++)
         {
             RecursivelyAddPlanets(parents[i], n, m - 1);
-        }
-    }
-    SolarSystem(int tick)
-    {
-        this->tick = tick;
-        if (!tick)
-        {
-            AddPlanet(0, 0, 0, 0, 50, 0, 1000);
-            AddPlanet(5000, 0, 0, 0, -50, 0, 1000);
-        }
-    }
-    void DrawSolarSystem(bool static_radius)
-    {
-        for (int64_t i = 1; i <= planetsLength;i++)
-        {
-            if (PlanetOption temp = GetPlanetReference(i))
-            {
-                PlanetReference planet = temp;
-                const float scale = 1.f/100.f;
-                glPushMatrix();
-                glScalef(scale, scale, scale);
-                glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
-                if (static_radius)
-                {
-                    glDrawArrays(GL_TRIANGLES, 0, 36);
-                    //glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, &box_face[0]);
-                }
-                else
-                    drawSphere(*planet.r * scale, 10, 10);
-                glPopMatrix();
-            }
         }
     }
     void MergePlanets(int64_t idA, int64_t idB)
@@ -587,86 +565,6 @@ public:
             }
         }
     }
-    // Presentation
-    void ApplyForces()
-    {
-        if (planetsLength)
-        {
-            // Separate applying forces and velocity since it's O(n)
-            for (int64_t i = 0; i < planetsLength / VECWIDTH + 1; i++)
-            {
-                PlanetGroup* groupA = &planets[i];
-                PlanetGroupExtra* groupAExtra = &planetsExtra[i];
-                for (int64_t j = 0; j < VECWIDTH; j++)
-                {
-                    if (groupA->id.m256i_i64[j] != 0)
-                    {
-                        // Add force to velocity (acceleration)
-                        groupAExtra->dx.m256d_f64[j] += groupAExtra->Fx.m256d_f64[j] / groupA->mass.m256d_f64[j];
-                        groupAExtra->dy.m256d_f64[j] += groupAExtra->Fy.m256d_f64[j] / groupA->mass.m256d_f64[j];
-                        groupAExtra->dz.m256d_f64[j] += groupAExtra->Fz.m256d_f64[j] / groupA->mass.m256d_f64[j];
-                        // Add velocity to position
-                        groupA->x.m256d_f64[j] += groupAExtra->dx.m256d_f64[j];
-                        groupA->y.m256d_f64[j] += groupAExtra->dy.m256d_f64[j];
-                        groupA->z.m256d_f64[j] += groupAExtra->dz.m256d_f64[j];
-                        // Set force to 0 for recalculation
-                        groupAExtra->Fx.m256d_f64[j] = 0.f;
-                        groupAExtra->Fy.m256d_f64[j] = 0.f;
-                        groupAExtra->Fz.m256d_f64[j] = 0.f;
-                    }
-                }
-            }
-        }
-    }
-    void Threaded(const int64_t start, const int64_t end)
-    {
-        // F = (G * m1 * m2) / r^2
-        // F = ma
-        // a = m / F;
-        // a = m / ((G * m * m2) / r^2)
-        for (int64_t i = start; i < end; i++)
-        {
-            PlanetGroup* groupA = &planets[i];
-            PlanetGroupExtra* groupAExtra = &planetsExtra[i];
-            for (int64_t j = 0; j < VECWIDTH; j++)
-            {
-                if (groupA->id.m256i_i64[j] != 0)
-                {
-                    for (int64_t k = 0; k < planets.size(); k++)
-                    {
-                        PlanetGroup* groupB = &planets[k];
-                        for (int64_t l = 0; l < VECWIDTH; l++)
-                        {
-                            if (groupB->id.m256i_i64[l] != 0 && groupA->id.m256i_i64[j] != groupB->id.m256i_i64[l])
-                            {
-                                double rx = groupB->x.m256d_f64[l] - groupA->x.m256d_f64[j];
-                                double ry = groupB->y.m256d_f64[l] - groupA->y.m256d_f64[j];
-                                double rz = groupB->z.m256d_f64[l] - groupA->z.m256d_f64[j];
-                                double r2 = (rx * rx) + (ry * ry) + (rz * rz);
-                                double F = (G * (groupA->mass.m256d_f64[j]) * groupB->mass.m256d_f64[j]) / r2;
-                                groupAExtra->Fx.m256d_f64[j] += F * rx;
-                                groupAExtra->Fy.m256d_f64[j] += F * ry;
-                                groupAExtra->Fz.m256d_f64[j] += F * rz;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    void UpdatePlanets(bool apply_forces)
-    {
-        // F = (G * m1 * m2) / r^2
-        // F = ma
-        // a = m / F;
-        // a = m / ((G * m * m2) / r^2)
-        if(merging)
-            MergeAllPlanets();
-        Threaded(0, planets.size());
-        if(apply_forces)
-            ApplyForces();
-    }
-    // Presentation Section
     void SimdThreaded(const int64_t start, int64_t end)
     {
         if (end > planets.size())
@@ -742,6 +640,36 @@ public:
             }
         }
     }
+    void ApplyForces()
+    {
+        if (planetsLength)
+        {
+            // Separate applying forces and velocity since it's O(n)
+            for (int64_t i = 0; i < planetsLength / VECWIDTH + 1; i++)
+            {
+                PlanetGroup* groupA = &planets[i];
+                PlanetGroupExtra* groupAExtra = &planetsExtra[i];
+                for (int64_t j = 0; j < VECWIDTH; j++)
+                {
+                    if (groupA->id.m256i_i64[j] != 0)
+                    {
+                        // Add force to velocity (acceleration)
+                        groupAExtra->dx.m256d_f64[j] += groupAExtra->Fx.m256d_f64[j] / groupA->mass.m256d_f64[j];
+                        groupAExtra->dy.m256d_f64[j] += groupAExtra->Fy.m256d_f64[j] / groupA->mass.m256d_f64[j];
+                        groupAExtra->dz.m256d_f64[j] += groupAExtra->Fz.m256d_f64[j] / groupA->mass.m256d_f64[j];
+                        // Add velocity to position
+                        groupA->x.m256d_f64[j] += groupAExtra->dx.m256d_f64[j];
+                        groupA->y.m256d_f64[j] += groupAExtra->dy.m256d_f64[j];
+                        groupA->z.m256d_f64[j] += groupAExtra->dz.m256d_f64[j];
+                        // Set force to 0 for recalculation
+                        groupAExtra->Fx.m256d_f64[j] = 0.f;
+                        groupAExtra->Fy.m256d_f64[j] = 0.f;
+                        groupAExtra->Fz.m256d_f64[j] = 0.f;
+                    }
+                }
+            }
+        }
+    }
     void ThreadedUpdatePlanets(bool apply_forces)
     {
         // I don't think this can be multithreaded since it relies on removing elements being thread safe... 
@@ -758,12 +686,12 @@ public:
                     system->SimdThreaded(start, end);
                     }, this, i * block_size, (i + 1) * block_size));
             }
-            else
-            {
-                threads.emplace_back(std::thread([&](SolarSystem* system, const int64_t start, const int64_t end) {
-                    system->Threaded(start, end);
-                    }, this, i * block_size, (i + 1) * block_size));
-            }
+            //else
+            //{
+            //    threads.emplace_back(std::thread([&](SolarSystem* system, const int64_t start, const int64_t end) {
+            //        system->Threaded(start, end);
+            //        }, this, i * block_size, (i + 1) * block_size));
+            //}
         }
         for (int64_t i = 0; i < NUM_THREADS; i++)
         {
@@ -772,37 +700,37 @@ public:
         if(apply_forces)
             ApplyForces();
     }
-    void UpdatePlanetsSimd()
+    void DrawSolarSystem(bool orbit_path)
     {
-        if(merging)
-            MergeAllPlanets();
-        SimdThreaded(0, planets.size());
-    }
-    void CheckPlanets()
-    {
-        // Separate applying forces and velocity since it's O(n)
-        for (int64_t i = 0; i < planetsLength / VECWIDTH + 1; i++)
+        for (int64_t i = 1; i <= planetsLength; i++)
         {
-            PlanetGroup* groupA = &planets[i];
-            PlanetGroupExtra* groupAExtra = &planetsExtra[i];
-            for (int64_t j = 0; j < VECWIDTH; j++)
+            if (PlanetOption temp = GetPlanetReference(i))
             {
-                if (groupA->id.m256i_i64[j] != 0)
+                PlanetReference planet = temp;
+
+                // Change the scale so that the renderer looks better
+                const float scale = 1.f / 100.f;
+                glPushMatrix();
+                glScalef(scale, scale, scale);
+
+                // Draw planet at this position
+                glTranslatef(*planet.x * scale, *planet.y * scale, *planet.z * scale);
+                if (orbit_path)
                 {
-                    if (groupA->z.m256d_f64[j] != 0)
-                        bool hello = true;
+                    // Super fast drawcall for a cube (cube vertices are already loaded onto graphics card)
+                    glDrawArrays(GL_TRIANGLES, 0, 36);
                 }
+                else
+                {   
+                    // Relatively slow draw call
+                    glScalef(*planet.r * scale, *planet.r * scale, *planet.r * scale);
+                    drawSphere();
+                }
+                glPopMatrix();
             }
         }
     }
 };
-
-void glLoadMatrixf(glm::mat4 matrix)
-{
-    float* fM;
-    fM = glm::value_ptr(matrix);
-    glLoadMatrixf(fM);
-}
 
 int main()
 {
@@ -817,7 +745,7 @@ int main()
     sf::Vector2u windowSize = window.getSize();
     sf::Vector2i windowMiddle = sf::Vector2i(windowSize.x / 2, windowSize.y / 2);
     bool cursorGrabbed = true;
-    bool recalculate_frames = false;
+    bool recalculate_frames = true;
     bool time_recalculation = false;
     std::string recalc_time = "Recalculated in ";
     centreView.setSize(sf::Vector2f(windowSize.x, windowSize.y));
@@ -874,8 +802,8 @@ int main()
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     std::list<SolarSystem> simulation;
     SolarSystem system = SolarSystem(0);
-    //system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-    //system.MergeAllPlanets();
+    system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+    system.MergeAllPlanets();
     simulation.emplace_back(system);
 
     bool running = true;
@@ -946,6 +874,7 @@ int main()
                 running = false;
             }
         }
+        // Movement code
         const float cameraSpeed = 0.05f; // adjust accordingly
         float accelerate = (1.f + float(sf::Keyboard::isKeyPressed(sf::Keyboard::LControl)));
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::W))
@@ -964,6 +893,8 @@ int main()
         {
             cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed * accelerate;
         }
+
+
         if (running)
         {
             float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
@@ -1130,7 +1061,7 @@ int main()
 
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-                glLoadMatrixf(glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp));
+                glLoadMatrixf(glm::value_ptr(glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp)));
 
                 // Draw a white grid "floor" for the tetrahedron to sit on.
                 glColor3f(1.0, 1.0, 1.0);
@@ -1148,20 +1079,13 @@ int main()
                         glVertex3f(dist, 0, i); glVertex3f(-dist, 0, i);
                     }
                     glEnd();
-
-                    /*glEnableClientState(GL_VERTEX_ARRAY);
-                    glEnableClientState(GL_NORMAL_ARRAY);
-                    glVertexPointer(3, GL_FLOAT, 3 * sizeof(float), &box_array[0]);
-                    glNormalPointer(GL_FLOAT, 3 * sizeof(float), &box_array[0]);
-                    glDrawArrays(GL_TRIANGLES, 0, 36);
-                    glDisableClientState(GL_VERTEX_ARRAY);
-                    glDisableClientState(GL_NORMAL_ARRAY);*/
                 }
                 for (auto it = simulation.begin(); it != simulation.end(); it++)
                 {
                     if (it == simulation.begin())
                     {
                         simulation.front().DrawSolarSystem(false);
+                        // Load cube into graphics card for next draw calls
                         glEnableClientState(GL_VERTEX_ARRAY);
                         glEnableClientState(GL_NORMAL_ARRAY);
                         glVertexPointer(3, GL_FLOAT, 3 * sizeof(float), &box_array[0]);
@@ -1181,11 +1105,6 @@ int main()
             }
             ImGui::SFML::Render(window);
             window.display();
-
-            GLenum error = glGetError();
-            if (error != GL_NO_ERROR) {
-                std::cout << std::to_string(error);
-            }
         }
     }
     ImGui::SFML::Shutdown();

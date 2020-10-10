@@ -1,0 +1,48 @@
+    void Threaded(const int64_t start, const int64_t end)
+    {
+        // F = (G * m1 * m2) / r^2
+        // F = ma
+        // a = m / F;
+        // a = m / ((G * m * m2) / r^2)
+        for (int64_t i = start; i < end; i++)
+        {
+            PlanetGroup* groupA = &planets[i];
+            PlanetGroupExtra* groupAExtra = &planetsExtra[i];
+            for (int64_t j = 0; j < VECWIDTH; j++)
+            {
+                if (groupA->id.m256i_i64[j] != 0)
+                {
+                    for (int64_t k = 0; k < planets.size(); k++)
+                    {
+                        PlanetGroup* groupB = &planets[k];
+                        for (int64_t l = 0; l < VECWIDTH; l++)
+                        {
+                            if (groupB->id.m256i_i64[l] != 0 && groupA->id.m256i_i64[j] != groupB->id.m256i_i64[l])
+                            {
+                                double rx = groupB->x.m256d_f64[l] - groupA->x.m256d_f64[j];
+                                double ry = groupB->y.m256d_f64[l] - groupA->y.m256d_f64[j];
+                                double rz = groupB->z.m256d_f64[l] - groupA->z.m256d_f64[j];
+                                double r2 = (rx * rx) + (ry * ry) + (rz * rz);
+                                double F = (G * (groupA->mass.m256d_f64[j]) * groupB->mass.m256d_f64[j]) / r2;
+                                groupAExtra->Fx.m256d_f64[j] += F * rx;
+                                groupAExtra->Fy.m256d_f64[j] += F * ry;
+                                groupAExtra->Fz.m256d_f64[j] += F * rz;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    void UpdatePlanets(bool apply_forces)
+    {
+        // F = (G * m1 * m2) / r^2
+        // F = ma
+        // a = m / F;
+        // a = m / ((G * m * m2) / r^2)
+        if(merging)
+            MergeAllPlanets();
+        Threaded(0, planets.size());
+        if(apply_forces)
+            ApplyForces();
+    }
