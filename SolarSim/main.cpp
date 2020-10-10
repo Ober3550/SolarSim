@@ -269,26 +269,6 @@ struct PlanetGroupExtra {
     __m256d Fz;
 };
 
-sf::Color HSV2RGB(sf::Color input)
-{
-    float h = input.r * 360.f / 256.f, s = input.g / 256.f, v = input.b / 256.f;
-    float c = v * s;
-    float val = h / 60.f;
-    while (val > 2.0f)
-        val -= 2.f;
-    float x = c * (1.f - abs(val - 1.f));
-    float m = v - c;
-    std::array<std::array<float, 3>, 6> colorTable;
-    colorTable[0] = { c,x,0 };
-    colorTable[1] = { x,c,0 };
-    colorTable[2] = { 0,c,x };
-    colorTable[3] = { 0,x,c };
-    colorTable[4] = { x,0,c };
-    colorTable[5] = { c,0,x };
-    std::array<float, 3> color = colorTable[int(h / 60)];
-    return sf::Color(uint8_t((color[0] + m) * 256), uint8_t((color[1] + m) * 256), uint8_t((color[2] + m) * 256), input.a);
-}
-
 class SolarSystem {
 public:
     std::vector<PlanetGroup>        planets;
@@ -451,6 +431,7 @@ public:
             planetsLength--;
         }
     }
+    // Presentation
     void AddRandomSatellite(int64_t id) {
         if (PlanetOption temp = GetPlanetReference(id))
         {
@@ -606,6 +587,7 @@ public:
             }
         }
     }
+    // Presentation
     void ApplyForces()
     {
         if (planetsLength)
@@ -619,12 +601,15 @@ public:
                 {
                     if (groupA->id.m256i_i64[j] != 0)
                     {
+                        // Add force to velocity (acceleration)
                         groupAExtra->dx.m256d_f64[j] += groupAExtra->Fx.m256d_f64[j] / groupA->mass.m256d_f64[j];
                         groupAExtra->dy.m256d_f64[j] += groupAExtra->Fy.m256d_f64[j] / groupA->mass.m256d_f64[j];
                         groupAExtra->dz.m256d_f64[j] += groupAExtra->Fz.m256d_f64[j] / groupA->mass.m256d_f64[j];
+                        // Add velocity to position
                         groupA->x.m256d_f64[j] += groupAExtra->dx.m256d_f64[j];
                         groupA->y.m256d_f64[j] += groupAExtra->dy.m256d_f64[j];
                         groupA->z.m256d_f64[j] += groupAExtra->dz.m256d_f64[j];
+                        // Set force to 0 for recalculation
                         groupAExtra->Fx.m256d_f64[j] = 0.f;
                         groupAExtra->Fy.m256d_f64[j] = 0.f;
                         groupAExtra->Fz.m256d_f64[j] = 0.f;
@@ -681,7 +666,7 @@ public:
         if(apply_forces)
             ApplyForces();
     }
-    
+    // Presentation Section
     void SimdThreaded(const int64_t start, int64_t end)
     {
         if (end > planets.size())
@@ -692,82 +677,67 @@ public:
             PlanetGroupExtra*   groupAExtra = &planetsExtra[i];
             for (int64_t j = 0; j < VECWIDTH; j++)
             {
-                __m256d planetA_x       = _mm256_set1_pd(groupA->x.m256d_f64[j]);
-                __m256d planetA_y       = _mm256_set1_pd(groupA->y.m256d_f64[j]);
-                __m256d planetA_z       = _mm256_set1_pd(groupA->z.m256d_f64[j]);
-                __m256d planetA_mass    = _mm256_set1_pd(groupA->mass.m256d_f64[j]);
-                __m256i planetA_id      = _mm256_set1_epi64x(groupA->id.m256i_i64[j]);
-                union {
-                    double  planetA_Fx[VECWIDTH];
+                // Skip unintialized planets
+                if (groupA->id.m256i_i64[j] != 0)
+                {
+                    // Get position, mass and id of current planet
+                    __m256d planetA_x = _mm256_set1_pd(groupA->x.m256d_f64[j]);
+                    __m256d planetA_y = _mm256_set1_pd(groupA->y.m256d_f64[j]);
+                    __m256d planetA_z = _mm256_set1_pd(groupA->z.m256d_f64[j]);
+                    __m256d planetA_mass = _mm256_set1_pd(groupA->mass.m256d_f64[j]);
+                    __m256i planetA_id = _mm256_set1_epi64x(groupA->id.m256i_i64[j]);
+                    // Create variables to accumulate forces
                     __m256d mplanetA_Fx = _mm256_set1_pd(0);
-                };
-                union {
-                    double  planetA_Fy[VECWIDTH];
                     __m256d mplanetA_Fy = _mm256_set1_pd(0);
-                };
-                union {
-                    double  planetA_Fz[VECWIDTH];
                     __m256d mplanetA_Fz = _mm256_set1_pd(0);
-                };
-                for (int64_t k = 0; k < planets.size(); k++)
-                {
-                    PlanetGroup* groupB = &planets[k];
-                    // Subtract planet As position from groups positions to find relative distance
-                    // Find the square of each distance
-                    // Code readibility may suffer due to functions not being optimized such that
-                    // Simd vectors aren't being stored in registers properly and may be passed to cache or stack preemtively
-                    //  xxxx
-                    // +yyyy
-                    // =zzzz
-                    __m256d rx   = _mm256_sub_pd(groupB->x, planetA_x);
-                    __m256d rx2  = _mm256_mul_pd(rx, rx);
-                    __m256d ry   = _mm256_sub_pd(groupB->y, planetA_y);
-                    __m256d ry2  = _mm256_mul_pd(ry, ry);
-                    __m256d rz   = _mm256_sub_pd(groupB->z, planetA_z);
-                    __m256d rz2  = _mm256_mul_pd(rz, rz);
-                    // Find the radius squared
-                    __m256d r2   = _mm256_add_pd(_mm256_add_pd(rx2, ry2), rz2);
-                    // Calculate gravity
-                    __m256d mass  = _mm256_mul_pd(groupB->mass, planetA_mass);
-                    __m256d gm    = _mm256_mul_pd(mass, gravity);
-                    // Find the forces for each dimension
-                    __m256d F = _mm256_div_pd(gm, r2);
-                    union {
-                        double F_x[VECWIDTH];
-                        __m256d Fx;
-                    };
-                    Fx = _mm256_mul_pd(F, rx);
-                    union {
-                        double F_y[VECWIDTH];
-                        __m256d Fy;
-                    };
-                    Fy = _mm256_mul_pd(F, ry);
-                    union {
-                        double F_z[VECWIDTH];
-                        __m256d Fz;
-                    };
-                    Fz = _mm256_mul_pd(F, rz);
+                    for (int64_t k = 0; k < planets.size(); k++)
+                    {
+                        PlanetGroup* groupB = &planets[k];
+                        // What does simd do?
+                        //   xxxx
+                        // + yyyy
+                        // = zzzz
+                        // Subtract planet As position from groups positions to find relative distance
+                        __m256d rx = _mm256_sub_pd(groupB->x, planetA_x);
+                        __m256d ry = _mm256_sub_pd(groupB->y, planetA_y);
+                        __m256d rz = _mm256_sub_pd(groupB->z, planetA_z);
+                        // Find the square of each distance
+                        __m256d rx2 = _mm256_mul_pd(rx, rx);
+                        __m256d ry2 = _mm256_mul_pd(ry, ry);
+                        __m256d rz2 = _mm256_mul_pd(rz, rz);
+                        // Find the radius squared
+                        __m256d r2 = _mm256_add_pd(_mm256_add_pd(rx2, ry2), rz2);
+                        // Calculate gravitational force
+                        __m256d mass = _mm256_mul_pd(groupB->mass, planetA_mass);
+                        __m256d gm = _mm256_mul_pd(mass, gravity);
+                        __m256d F = _mm256_div_pd(gm, r2);
+                        // Find the forces for each dimension
+                        __m256d Fx = _mm256_mul_pd(F, rx);
+                        __m256d Fy = _mm256_mul_pd(F, ry);
+                        __m256d Fz = _mm256_mul_pd(F, rz);
 
-                    // Remove nan values such as planets affecting themselves
-                    // If id == 0
-                    __m256i zeromask    = _mm256_cmpeq_epi64(groupB->id, m_zeroi);
-                    __m256i idmask      = _mm256_cmpeq_epi64(groupB->id, planetA_id);
-                    // If groupA.id == groupB.id
-                    __m256i bothmask    = _mm256_or_si256(zeromask, idmask);
-                    bothmask            = _mm256_xor_si256(bothmask, m_onesi);
-                    Fx = _mm256_and_pd(Fx, _mm256_castsi256_pd(bothmask));
-                    Fy = _mm256_and_pd(Fy, _mm256_castsi256_pd(bothmask));
-                    Fz = _mm256_and_pd(Fz, _mm256_castsi256_pd(bothmask));
-
-                    mplanetA_Fx = _mm256_add_pd(mplanetA_Fx, Fx);
-                    mplanetA_Fy = _mm256_add_pd(mplanetA_Fy, Fy);
-                    mplanetA_Fz = _mm256_add_pd(mplanetA_Fz, Fz);
-                }
-                for (int64_t l = 0; l < VECWIDTH; l++)
-                {
-                    groupAExtra->Fx.m256d_f64[j] += planetA_Fx[l];
-                    groupAExtra->Fy.m256d_f64[j] += planetA_Fy[l];
-                    groupAExtra->Fz.m256d_f64[j] += planetA_Fz[l];
+                        // Remove nan values such as planets affecting themselves
+                        // If id == 0
+                        __m256i zeromask = _mm256_cmpeq_epi64(groupB->id, m_zeroi);
+                        __m256i idmask = _mm256_cmpeq_epi64(groupB->id, planetA_id);
+                        // If groupA.id == groupB.id
+                        __m256i bothmask = _mm256_or_si256(zeromask, idmask);
+                        bothmask = _mm256_xor_si256(bothmask, m_onesi);
+                        Fx = _mm256_and_pd(Fx, _mm256_castsi256_pd(bothmask));
+                        Fy = _mm256_and_pd(Fy, _mm256_castsi256_pd(bothmask));
+                        Fz = _mm256_and_pd(Fz, _mm256_castsi256_pd(bothmask));
+                        // Accumulate forces
+                        mplanetA_Fx = _mm256_add_pd(mplanetA_Fx, Fx);
+                        mplanetA_Fy = _mm256_add_pd(mplanetA_Fy, Fy);
+                        mplanetA_Fz = _mm256_add_pd(mplanetA_Fz, Fz);
+                    }
+                    // Flatten 4 wide force accumulator onto single planet
+                    for (int64_t l = 0; l < VECWIDTH; l++)
+                    {
+                        groupAExtra->Fx.m256d_f64[j] += mplanetA_Fx.m256d_f64[l];
+                        groupAExtra->Fy.m256d_f64[j] += mplanetA_Fy.m256d_f64[l];
+                        groupAExtra->Fz.m256d_f64[j] += mplanetA_Fz.m256d_f64[l];
+                    }
                 }
             }
         }
