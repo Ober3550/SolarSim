@@ -83,6 +83,7 @@ bool runSimulation = true;
 bool drawPlane = true;
 int global_tick = 0;
 
+// Basic cube primitive for drawing planet paths
 const std::vector<std::array<float, 3>> box_vert = { {
     {-1.f,-1.f,-1.f},
     {-1.f,1.f,-1.f},
@@ -454,31 +455,33 @@ public:
         if (PlanetOption temp = GetPlanetReference(id))
         {
             PlanetReference parent = temp;
+            // Find two angles to determine the relative polar vector from the parent
             const int       angles = (360 * 32);
+            double angleA = (double(rand() % angles) / double(angles)) * 2.f * pi;
+            double angleB = (double(rand() % angles) / double(angles)) * 2.f * pi;
+
+            // Vector Magnitude
             const int       steps = 1000;
             const double    min_dis = 5;
             const double    max_dis = 100;
             const double    dif_dis = max_dis - min_dis;
+            double magni = (*parent.r) + (*parent.mass) * (min_dis + double(rand() % steps) / double(steps) * dif_dis);
+            double new_x = (*parent.x) + sin(angleA) * cos(angleB) * magni;
+            double new_y = (*parent.y) + sin(angleB)               * magni;
+            double new_z = (*parent.z) + cos(angleA) * cos(angleB) * magni;
+
+            // Calculate Mass
             const double    min_prop = 0.005;
             const double    max_prop = 0.05;
             const double    dif_prop = max_prop - min_prop;
             const int       mas_step = 1000;
             double new_mass = min_prop + double(rand() % mas_step) / mas_step * dif_prop * (*parent.mass);
-            double angleA = double(rand() % angles) / double(angles);
-            double angleB = double(rand() % angles) / double(angles);
-            angleA *= 2.f * pi;
-            angleB *= 2.f * pi;
-            double magni = (*parent.r) + (*parent.mass) * (min_dis + double(rand() % steps) / double(steps) * dif_dis);
-            double new_x = (*parent.x) + sin(angleA) * cos(angleB) * magni;
-            double new_y = (*parent.y) + sin(angleB)               * magni;
-            double new_z = (*parent.z) + cos(angleA) * cos(angleB) * magni;
-            double new_dx;
-            double new_dy;
-            double new_dz;
+
+            // Calculate Velocity
             double scalar = sqrt(G*((*parent.mass) + 0.5 * children * new_mass));
-            new_dx = (*parent.dx) + cos(angleA + pi * 0.5) * scalar;
-            new_dy = (*parent.dy) + sin(angleA + pi * 0.5) * scalar;
-            new_dz = (*parent.dz) + sin(angleB + pi * 0.5) * scalar;
+            double new_dx = (*parent.dx) + cos(angleA + pi * 0.5) * scalar;
+            double new_dy = (*parent.dy) + sin(angleA + pi * 0.5) * scalar;
+            double new_dz = (*parent.dz) + sin(angleB + pi * 0.5) * scalar;
             
             AddPlanet(new_x, new_y, new_z, new_dx, new_dy, new_dz, new_mass);
         }
@@ -849,14 +852,6 @@ int main()
     std::string recalc_time = "Recalculated in ";
     centreView.setSize(sf::Vector2f(windowSize.x, windowSize.y));
     centreView.setCenter(0, 0);
-    sf::Vector2f prevCamPos = { 0.f,0.f };
-    sf::Vector2f mousePos = { 0.f,0.f };
-    uint8_t KEYW = 1;
-    uint8_t KEYS = 2;
-    uint8_t KEYA = 4;
-    uint8_t KEYD = 8;
-    uint8_t KEYCTRL = 16;
-    uint8_t pressed = 0;
     
     // Opengl stuff -------------------------------
     
@@ -926,6 +921,10 @@ int main()
                     cursorGrabbed = !cursorGrabbed;
                     sf::Mouse::setPosition(sf::Vector2i(windowMiddle.x, windowMiddle.y), window);
                 }break;
+                case sf::Keyboard::Escape: {
+                    cursorGrabbed = !cursorGrabbed;
+                    sf::Mouse::setPosition(sf::Vector2i(windowMiddle.x, windowMiddle.y), window);
+                }break;
                 }
             }
             else if (event.type == sf::Event::MouseMoved)
@@ -956,7 +955,7 @@ int main()
                         cameraFront = glm::normalize(direction);
                     }
                 }
-                mousePos = sf::Vector2f(event.mouseMove.x - float(windowMiddle.x), event.mouseMove.y - float(windowMiddle.y));
+                //mousePos = sf::Vector2f(event.mouseMove.x - float(windowMiddle.x), event.mouseMove.y - float(windowMiddle.y));
             }
             else if (event.type == sf::Event::Resized)
             {
