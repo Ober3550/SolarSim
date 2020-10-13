@@ -565,11 +565,14 @@ public:
         if(merging)
             ThreadedMergePlanets();
 
-        // Seems like threads don't like to be moved or recreated
+        // Create thread container
         std::vector<std::thread> threads;
+        // Calculate work division size
         int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
+        // Override for when only 1 thread is being used
         if (NUM_THREADS == 1)
             block_size = planets.size();
+        // Construct threads with given work
         for (int i = 0; i < NUM_THREADS; i++)
         {
             if (simd)
@@ -585,6 +588,7 @@ public:
                     }, this, i * block_size, (i + 1) * block_size));
             }
         }
+        // Join threads
         for (int i = 0; i < NUM_THREADS; i++)
         {
             threads[i].join();
