@@ -1,0 +1,9 @@
+Test,SIMD,Threads,Time
+1,true,4,4124962
+2,true,3,5300276
+3,true,2,7504936
+4,true,1,11401287
+5,false,4,17809805
+6,false,3,23615114
+7,false,2,35877549
+8,false,1,54611193

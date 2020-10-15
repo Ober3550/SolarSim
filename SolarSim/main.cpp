@@ -60,16 +60,17 @@ __m256 gravity = _mm256_set1_ps(G);
 
 int selectedPlanet = 1;
 bool gotoSelected = false;
-bool merging = true;
+bool merging = false;
 bool simd = true;
-bool test_script = false;
+bool script_speed = false;
+bool script_compare = true;
 int NUM_THREADS = 4;
 sf::Vector2f camPos = { 0.f,0.f };
 
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int tiers = 2;
-int children = 150;
+int children = 250;
 bool static_framerate = false;
 int global_tick = 0;
 
@@ -558,7 +559,7 @@ public:
             }
         }
     }
-    void ThreadedUpdatePlanets()
+    void ThreadedUpdatePlanets(bool apply_forces)
     {
         // I don't think this can be multithreaded since it relies on removing elements being thread safe... 
         // which is obvious why it wouldn't be
@@ -593,10 +594,13 @@ public:
         {
             threads[i].join();
         }
-        if (simd)
-            SimdApplyForces();
-        else
-            ApplyForces();
+        if (apply_forces)
+        {
+            if (simd)
+                SimdApplyForces();
+            else
+                ApplyForces();
+        }
     }
 };
 
@@ -640,8 +644,8 @@ int main()
     //srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     srand(200);
     SolarSystem system;
-    //system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-    //system.ThreadedMergePlanets();
+    system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+    system.ThreadedMergePlanets();
     bool running = true;
 
     while (running && window.isOpen()) {
@@ -725,7 +729,7 @@ int main()
         ImGui::SFML::Update(window, deltaClock.restart());
 
         ImGui::Begin("Update Rate");
-        static int updatesPerFrame = 1;
+        static int updatesPerFrame = 10;
         ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
         ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
         double num_ops = frameRate * double(int64_t(updatesPerFrame) * int64_t(system.planetsLength) * int64_t(system.planetsLength));
@@ -753,9 +757,9 @@ int main()
         if (ImGui::Button("Run Tests"))
         {
             NUM_THREADS = std::thread::hardware_concurrency();
-            test_script = true;
+            script_speed = true;
         }
-        if (test_script) ImGui::Text(std::string("Running").c_str());
+        if (script_speed) ImGui::Text(std::string("Running").c_str());
         ImGui::End();
 
         ImGui::Begin("Modify Planet");
@@ -815,7 +819,9 @@ int main()
                     updatesPerFrame++;
             }
             for (int i = 0; i < updatesPerFrame; i++)
-                system.ThreadedUpdatePlanets();
+            {
+                system.ThreadedUpdatePlanets(true);
+            }
         }
         //ImGui::ShowTestWindow();
 
@@ -831,22 +837,27 @@ int main()
         ImGui::SFML::Render(window);
         window.display();
         frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
-        if (test_script)
+        if (script_speed)
         {
-            if (global_tick > 5)
+            // Give the program a few frames to settle the memory layout in to remove any discrepancies due to startup processes
+            if (global_tick > 0)
             {
                 result_num++;
                 test_num++;
+                // Create a new entry to the table
                 results += std::to_string(result_num) + ","
                     + (simd ? "true," : "false,")
                     + std::to_string(NUM_THREADS) + ","
                     + std::to_string(frameClock.getElapsedTime().asMicroseconds()) + "\n";
-                if (test_num == 4)
+                // Run 4 tests for each configuration
+                if (test_num == 1)
                 {
+                    // Decrement the number of threads untill there's only 1
                     if (NUM_THREADS != 1)
                         NUM_THREADS--;
                     else
                     {
+                        // If there's only 1 thread and simd is active that means the first 16 tests have been completed and switch to the non-simd tests.
                         if (simd)
                         {
                             NUM_THREADS = std::thread::hardware_concurrency();
@@ -854,6 +865,8 @@ int main()
                         }
                         else
                         {
+                            // If there's only 1 thread and simd was not active this means all tests have been completed
+                            // Write the results to a file and exit the program.
                             std::ofstream myfile;
                             myfile.open("results.csv", std::ios::out | std::ios::trunc | std::ios::binary);
                             if (myfile.is_open())
