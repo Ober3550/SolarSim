@@ -63,7 +63,7 @@ bool gotoSelected = false;
 bool merging = false;
 bool simd = true;
 bool script_speed = false;
-bool script_compare = true;
+bool script_compare = false;
 int NUM_THREADS = 4;
 sf::Vector2f camPos = { 0.f,0.f };
 
@@ -140,6 +140,36 @@ public:
         group->mass.m256_f32[index] = mass;
         group->r.m256_f32   [index] = sqrt(mass / pi) * 128.f;
         planetsLength++;
+    }
+    SolarSystem(const SolarSystem& other) {
+        this->planets = std::vector<PlanetGroup>(other.planets);
+        this->merger = std::unordered_set<int64_t>();
+        this->planetsLength = other.planetsLength;
+    }
+    bool operator==(const SolarSystem& other)
+    {
+        for (int i=0;i<planets.size();i++)
+        {
+            for (int j = 0; j < VECWIDTH; j++)
+            {
+                if (planets[i].id.m256i_i32[j] != 0 || other.planets[i].id.m256i_i32[j] != 0)
+                {
+                    if (planets[i].x.m256_f32[j] != other.planets[i].x.m256_f32[j])
+                        return false;
+                    if (planets[i].y.m256_f32[j] != other.planets[i].y.m256_f32[j])
+                        return false;
+                    if (planets[i].dx.m256_f32[j] != other.planets[i].dx.m256_f32[j])
+                        return false;
+                    if (planets[i].dy.m256_f32[j] != other.planets[i].dy.m256_f32[j])
+                        return false;
+                    if (planets[i].Fx.m256_f32[j] != other.planets[i].Fx.m256_f32[j])
+                        return false;
+                    if (planets[i].Fy.m256_f32[j] != other.planets[i].Fy.m256_f32[j])
+                        return false;
+                }
+            }
+        }
+        return true;
     }
     PlanetOption GetPlanet(int id)
     {
@@ -467,6 +497,9 @@ public:
             PlanetGroup* groupA = &planets[i];
             for (int j = 0; j < VECWIDTH; j++)
             {
+                // Adding accumulator arrays to test theory
+                float Fx[VECWIDTH] = {};
+                float Fy[VECWIDTH] = {};
                 if (groupA->id.m256i_i32[j] != 0)
                 {
                     for (int k = 0; k < planets.size(); k++)
@@ -479,11 +512,19 @@ public:
                                 float rx = groupB->x.m256_f32[l] - groupA->x.m256_f32[j];
                                 float ry = groupB->y.m256_f32[l] - groupA->y.m256_f32[j];
                                 float r2 = (rx * rx) + (ry * ry);
-                                float F = (G * (groupA->mass.m256_f32[j]) * groupB->mass.m256_f32[j]) / r2;
-                                groupA->Fx.m256_f32[j] += F * rx;
-                                groupA->Fy.m256_f32[j] += F * ry;
+                                float F = (G * (groupA->mass.m256_f32[j]) * groupB->mass.m256_f32[l]) / r2;
+                                Fx[l] += F * rx;
+                                Fy[l] += F * ry;
+                                // Previous way of accumulating values
+                                //groupA->Fx.m256_f32[j] += F * rx;
+                                //groupA->Fy.m256_f32[j] += F * ry;
                             }
                         }
+                    }
+                    for (int l = 0; l < VECWIDTH; l++)
+                    {
+                        groupA->Fx.m256_f32[j] += Fx[l];
+                        groupA->Fy.m256_f32[j] += Fy[l];
                     }
                 }
             }
@@ -496,8 +537,8 @@ public:
         {
             groupA.dx = _mm256_add_ps(groupA.dx, _mm256_div_ps(groupA.Fx, groupA.mass));
             groupA.dy = _mm256_add_ps(groupA.dy, _mm256_div_ps(groupA.Fy, groupA.mass));
-            groupA.x = _mm256_add_ps(groupA.x, groupA.dx);
-            groupA.y = _mm256_add_ps(groupA.y, groupA.dy);
+            groupA.x =  _mm256_add_ps(groupA.x, groupA.dx);
+            groupA.y =  _mm256_add_ps(groupA.y, groupA.dy);
             groupA.Fx = _mm256_set1_ps(0.f);
             groupA.Fy = _mm256_set1_ps(0.f);
         }
@@ -566,40 +607,52 @@ public:
         if(merging)
             ThreadedMergePlanets();
 
-        // Create thread container
-        std::vector<std::thread> threads;
-        // Calculate work division size
-        int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
-        // Override for when only 1 thread is being used
-        if (NUM_THREADS == 1)
-            block_size = planets.size();
-        // Construct threads with given work
-        for (int i = 0; i < NUM_THREADS; i++)
+        if (NUM_THREADS > 1)
+        {
+            // Create thread container
+            std::vector<std::thread> threads;
+            // Calculate work division size
+            int block_size = (planetsLength / VECWIDTH) / NUM_THREADS + 1;
+            // Construct threads with given work
+            for (int i = 0; i < NUM_THREADS; i++)
+            {
+                if (simd)
+                {
+                    threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                        system->SimdThreaded(start, end);
+                        }, this, i * block_size, (i + 1) * block_size));
+                }
+                else
+                {
+                    threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
+                        system->Threaded(start, end);
+                        }, this, i * block_size, (i + 1) * block_size));
+                }
+            }
+            // Join threads
+            for (int i = 0; i < NUM_THREADS; i++)
+            {
+                threads[i].join();
+            }
+        }
+        else
         {
             if (simd)
             {
-                threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
-                    system->SimdThreaded(start, end);
-                    }, this, i * block_size, (i + 1) * block_size));
+                SimdThreaded(0, this->planets.size());
             }
             else
             {
-                threads.emplace_back(std::thread([&](SolarSystem* system, const int start, const int end) {
-                    system->Threaded(start, end);
-                    }, this, i * block_size, (i + 1) * block_size));
+                Threaded(0, this->planets.size());
             }
-        }
-        // Join threads
-        for (int i = 0; i < NUM_THREADS; i++)
-        {
-            threads[i].join();
         }
         if (apply_forces)
         {
-            if (simd)
+            ApplyForces();
+            /*if (simd)
                 SimdApplyForces();
             else
-                ApplyForces();
+                */
         }
     }
 };
@@ -729,7 +782,7 @@ int main()
         ImGui::SFML::Update(window, deltaClock.restart());
 
         ImGui::Begin("Update Rate");
-        static int updatesPerFrame = 10;
+        static int updatesPerFrame = 1;
         ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
         ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
         double num_ops = frameRate * double(int64_t(updatesPerFrame) * int64_t(system.planetsLength) * int64_t(system.planetsLength));
@@ -820,6 +873,27 @@ int main()
             }
             for (int i = 0; i < updatesPerFrame; i++)
             {
+                if (script_compare)
+                {
+                    SolarSystem systemSerial = SolarSystem(system);
+                    SolarSystem systemNoSimd = SolarSystem(system);
+                    SolarSystem systemSimd = SolarSystem(system);
+                    int temp = std::thread::hardware_concurrency();
+                    simd = false;
+                    
+                    NUM_THREADS = 1;
+                    systemSerial.ThreadedUpdatePlanets(false);
+                    NUM_THREADS = temp;
+                    systemNoSimd.ThreadedUpdatePlanets(false);
+                    assert(systemSerial == systemNoSimd);
+                    simd = true;
+                    NUM_THREADS = 1;              
+                    systemSimd.ThreadedUpdatePlanets(false);
+                    NUM_THREADS = 4;
+                    system.ThreadedUpdatePlanets(false);
+                    assert(systemSimd == system);
+                    assert(systemNoSimd == systemSimd);
+                }
                 system.ThreadedUpdatePlanets(true);
             }
         }
