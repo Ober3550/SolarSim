@@ -802,8 +802,8 @@ int main()
     srand(std::hash<int>{}(frameClock.getElapsedTime().asMicroseconds()));
     std::list<SolarSystem> simulation;
     SolarSystem system = SolarSystem(0);
-    system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-    system.MergeAllPlanets();
+    //system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+    //system.MergeAllPlanets();
     simulation.emplace_back(system);
 
     bool running = true;
