@@ -551,6 +551,7 @@ public:
             PlanetGroup* groupA = &planets[i];
             for (int j = 0; j < VECWIDTH; j++)
             {
+                // Create accumulators for forces
                 __m256 planetA_Fx = _mm256_set1_ps(zero);
                 __m256 planetA_Fy = _mm256_set1_ps(zero);
 
@@ -559,25 +560,22 @@ public:
                     // START CORE LOOP
                     PlanetGroup* groupB = &planets[k];
                     // Subtract planet As position from groups positions to find relative distance
-                    // Find the square of each distance
-                    // Code readibility may suffer due to functions not being optimized such that
-                    // Simd vectors aren't being stored in registers properly and may be passed to cache or stack preemtively
 /*1*/               __m256 rx = _mm256_sub_ps(groupB->x, _mm256_set1_ps(groupA->x.m256_f32[j]));
-/*2*/               __m256 rx2 = _mm256_mul_ps(rx, rx);
-/*3*/               __m256 ry = _mm256_sub_ps(groupB->y, _mm256_set1_ps(groupA->y.m256_f32[j]));
+/*2*/               __m256 ry = _mm256_sub_ps(groupB->y, _mm256_set1_ps(groupA->y.m256_f32[j]));
+                    // Find the square of each distance
+/*3*/               __m256 rx2 = _mm256_mul_ps(rx, rx);
 /*4*/               __m256 ry2 = _mm256_mul_ps(ry, ry);
-                    // Find the radius squared
+                    // Find the euclidean distance squared
 /*5*/               __m256 r2 = _mm256_add_ps(rx2, ry2);
                     // Calculate gravity
 /*6*/               __m256 mass = _mm256_mul_ps(groupB->mass, _mm256_set1_ps(groupA->mass.m256_f32[j]));
-/*7*/               __m256 gm = _mm256_mul_ps(mass, gravity);
+/*7*/               __m256 gm   = _mm256_mul_ps(mass, gravity);
+/*8*/               __m256 F    = _mm256_div_ps(gm, r2);
                     // Find the forces for each dimension
-/*8*/               __m256 F = _mm256_div_ps(gm, r2);
                     __m256 Fx; 
                     __m256 Fy;
                     Fx = _mm256_mul_ps(F, rx);
                     Fy = _mm256_mul_ps(F, ry);
-
                     // Remove nan values such as planets affecting themselves
                     // If id == 0
 /*9*/               __m256i zeromask = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
@@ -587,11 +585,12 @@ public:
 /*12*/              bothmask = _mm256_xor_si256(bothmask, m_onesi);
 /*13*/              Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(bothmask));
 /*14*/              Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(bothmask));
-
+                    // Accumulate forces in 8 wide simd vectors
 /*15*/              planetA_Fx = _mm256_add_ps(planetA_Fx, Fx);
 /*16*/              planetA_Fy = _mm256_add_ps(planetA_Fy, Fy);
                     // END CORE LOOP
                 }
+                // Accumulate 8 wide force vector onto single variable within planet A
                 for (int l = 0; l < VECWIDTH; l++)
                 {
                     groupA->Fx.m256_f32[j] += planetA_Fx.m256_f32[l];
@@ -600,14 +599,21 @@ public:
             }
         }
     }
-    void ThreadedUpdatePlanets(bool apply_forces)
+    void ThreadedUpdatePlanets()
     {
         // I don't think this can be multithreaded since it relies on removing elements being thread safe... 
         // which is obvious why it wouldn't be
         if(merging)
             ThreadedMergePlanets();
 
-        if (NUM_THREADS > 1)
+        if (NUM_THREADS == 1)
+        {
+            if (simd)
+                SimdThreaded(0, this->planets.size());
+            else
+                Threaded(0, this->planets.size());
+        }
+        else
         {
             // Create thread container
             std::vector<std::thread> threads;
@@ -635,25 +641,10 @@ public:
                 threads[i].join();
             }
         }
+        if (simd)
+            SimdApplyForces();
         else
-        {
-            if (simd)
-            {
-                SimdThreaded(0, this->planets.size());
-            }
-            else
-            {
-                Threaded(0, this->planets.size());
-            }
-        }
-        if (apply_forces)
-        {
             ApplyForces();
-            /*if (simd)
-                SimdApplyForces();
-            else
-                */
-        }
     }
 };
 
@@ -882,19 +873,19 @@ int main()
                     simd = false;
                     
                     NUM_THREADS = 1;
-                    systemSerial.ThreadedUpdatePlanets(false);
+                    systemSerial.ThreadedUpdatePlanets();
                     NUM_THREADS = temp;
-                    systemNoSimd.ThreadedUpdatePlanets(false);
+                    systemNoSimd.ThreadedUpdatePlanets();
                     assert(systemSerial == systemNoSimd);
                     simd = true;
                     NUM_THREADS = 1;              
-                    systemSimd.ThreadedUpdatePlanets(false);
+                    systemSimd.ThreadedUpdatePlanets();
                     NUM_THREADS = 4;
-                    system.ThreadedUpdatePlanets(false);
+                    system.ThreadedUpdatePlanets();
                     assert(systemSimd == system);
                     assert(systemNoSimd == systemSimd);
                 }
-                system.ThreadedUpdatePlanets(true);
+                system.ThreadedUpdatePlanets();
             }
         }
         //ImGui::ShowTestWindow();
