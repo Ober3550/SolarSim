@@ -741,15 +741,12 @@ int main()
     window.setFramerateLimit(60);
     ImGui::SFML::Init(window);
 
-    sf::View centreView;
     sf::Vector2u windowSize = window.getSize();
     sf::Vector2i windowMiddle = sf::Vector2i(windowSize.x / 2, windowSize.y / 2);
     bool cursorGrabbed = true;
     bool recalculate_frames = true;
     bool time_recalculation = false;
     std::string recalc_time = "Recalculated in ";
-    centreView.setSize(sf::Vector2f(windowSize.x, windowSize.y));
-    centreView.setCenter(0, 0);
     
     // Opengl stuff -------------------------------
     
@@ -859,8 +856,6 @@ int main()
             {
                 windowSize = window.getSize();
                 windowMiddle = sf::Vector2i(windowSize.x / 2, windowSize.y / 2);
-                centreView.setSize(sf::Vector2f(windowSize.x, windowSize.y));
-                centreView.setCenter(0, 0);
                 double ratio = double(windowSize.x) / double(windowSize.y);
                 window.popGLStates();
                 glViewport(0, 0, windowSize.x, windowSize.y);
@@ -900,7 +895,6 @@ int main()
             float frameRate = 1000000.f / float(frameClock.getElapsedTime().asMicroseconds());
             window.clear();
             ImGui::SFML::Update(window, deltaClock.restart());
-            window.setView(centreView);
 
             ImGui::Begin("Update Rate");
 
