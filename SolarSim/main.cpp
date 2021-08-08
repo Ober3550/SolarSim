@@ -45,7 +45,6 @@ std::string add_commas(std::string str)
     return str;
 }
 
-sf::Texture circle;
 const int VECWIDTH = 8;
 const double pi = 2 * acos(0.0);
 float G = 4.f;
@@ -70,7 +69,7 @@ sf::Vector2f camPos = { 0.f,0.f };
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int tiers = 2;
-int children = 250;
+int children = 120;
 bool static_framerate = false;
 int global_tick = 0;
 
@@ -337,7 +336,7 @@ public:
         //AddPlanet(72, 0, 0, -2, 0.5);
         //AddPlanet(-216, 0, 0, 2, 0.5);
     }
-    std::vector<sf::Sprite> DrawSolarSystem()
+    std::vector<sf::Sprite> DrawSolarSystem(sf::Texture& circle)
     {
         std::vector<sf::Sprite> sprites;
         for (int i = 1; i <= planetsLength;i++)
@@ -663,6 +662,7 @@ int main()
         std::cout << entry.path() << '\n';
     }*/
 
+    sf::Texture circle;
     circle.loadFromFile("circle.png");
 
     sf::View centreView;
@@ -776,7 +776,7 @@ int main()
         static int updatesPerFrame = 1;
         ImGui::Text(std::string("FPS:     "+std::to_string_with_precision(frameRate)).c_str());
         ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
-        double num_ops = frameRate * double(int64_t(updatesPerFrame) * int64_t(system.planetsLength) * int64_t(system.planetsLength));
+        double num_ops = 16 * frameRate * double(int64_t(updatesPerFrame) * int64_t(system.planetsLength) * int64_t(system.planetsLength));
         std::string operations = add_commas(std::to_string_with_precision(num_ops));
         if (simulating)
         {
@@ -890,7 +890,7 @@ int main()
         }
         //ImGui::ShowTestWindow();
 
-        std::vector<sf::Sprite> sprites = system.DrawSolarSystem();
+        std::vector<sf::Sprite> sprites = system.DrawSolarSystem(circle);
         for (int i=0;i<sprites.size();i++)
         {
             sf::Sprite sprite = sprites[i];
