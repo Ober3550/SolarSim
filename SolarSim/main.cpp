@@ -554,20 +554,26 @@ public:
                 __m256 planetA_Fx = _mm256_set1_ps(zero);
                 __m256 planetA_Fy = _mm256_set1_ps(zero);
 
+                // Create common registers
+                __m256  planetA_x    = _mm256_set1_ps(groupA->x.m256_f32[j]);
+                __m256  planetA_y    = _mm256_set1_ps(groupA->y.m256_f32[j]);
+                __m256  planetA_mass = _mm256_set1_ps(groupA->mass.m256_f32[j]);
+                __m256i planetA_id = _mm256_set1_epi32(groupA->id.m256i_i32[j]);
+
                 for (int k = 0; k < planets.size(); k++)
                 {
                     // START CORE LOOP
                     PlanetGroup* groupB = &planets[k];
                     // Subtract planet As position from groups positions to find relative distance
-/*1*/               __m256 rx = _mm256_sub_ps(groupB->x, _mm256_set1_ps(groupA->x.m256_f32[j]));
-/*2*/               __m256 ry = _mm256_sub_ps(groupB->y, _mm256_set1_ps(groupA->y.m256_f32[j]));
+/*1*/               __m256 rx = _mm256_sub_ps(groupB->x, planetA_x);
+/*2*/               __m256 ry = _mm256_sub_ps(groupB->y, planetA_y);
                     // Find the square of each distance
 /*3*/               __m256 rx2 = _mm256_mul_ps(rx, rx);
 /*4*/               __m256 ry2 = _mm256_mul_ps(ry, ry);
                     // Find the euclidean distance squared
 /*5*/               __m256 r2 = _mm256_add_ps(rx2, ry2);
                     // Calculate gravity
-/*6*/               __m256 mass = _mm256_mul_ps(groupB->mass, _mm256_set1_ps(groupA->mass.m256_f32[j]));
+/*6*/               __m256 mass = _mm256_mul_ps(groupB->mass, planetA_mass);
 /*7*/               __m256 gm   = _mm256_mul_ps(mass, gravity);
 /*8*/               __m256 F    = _mm256_div_ps(gm, r2);
                     // Find the forces for each dimension
@@ -578,7 +584,7 @@ public:
                     // Remove nan values such as planets affecting themselves
                     // If id == 0
 /*9*/               __m256i zeromask = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
-/*10*/              __m256i idmask   = _mm256_cmpeq_epi32(groupB->id, _mm256_set1_epi32(groupA->id.m256i_i32[j]));
+/*10*/              __m256i idmask   = _mm256_cmpeq_epi32(groupB->id, planetA_id);
                     // If groupA.id == groupB.id
 /*11*/              __m256i bothmask = _mm256_or_si256(zeromask, idmask);
 /*12*/              bothmask = _mm256_xor_si256(bothmask, m_onesi);
@@ -786,7 +792,8 @@ int main()
             }
         }
         std::string max_operat = add_commas(std::to_string_with_precision(max_ops));
-        ImGui::Text(std::string("OPS:     " + operations).c_str());
+        ImGui::Text("Operations = n^2 * UPS * 16");
+        ImGui::Text(std::string("OPS    : " + operations).c_str());
         ImGui::Text(std::string("MAX OPS: " + max_operat).c_str());
         ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
         ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
