@@ -214,10 +214,22 @@ public:
             group->r.m256_f32[index]    = 0.f;
         }
     }
+    void RemoveAllButSelected(int id) {
+        for (int i = 0; i < planets.size(); i++) {
+            PlanetGroup* group = &planets[i];
+            for (int j = 0; j < VECWIDTH; j++) {
+                if (group->id.m256i_i32[j] != id) {
+                    group->id.m256i_i32[j] = 0;
+                }
+            }
+        }
+        RemoveHoles();
+    }
     // Removes the empty planets and packs everything 
     // closer together to use less memory and processing
     void RemoveHoles()
     {
+        planetsLength = 0;
         int prev_id = 0;
         for (int i = 0; i < planets.size(); i++)
         {
@@ -263,8 +275,10 @@ public:
                         }
                     }
                 }
-                else
+                else {
+                    planetsLength++;
                     prev_id = groupA->id.m256i_i32[j];
+                }
             }
         }
     reduce_vector:;
@@ -679,11 +693,6 @@ int main()
     float zoom = base_zoom;
     sf::Vector2f prevCamPos = { 0.f,0.f };
     sf::Vector2f mousePos = { 0.f,0.f };
-    uint8_t KEYW = 1;
-    uint8_t KEYS = 2;
-    uint8_t KEYA = 4;
-    uint8_t KEYD = 8;
-    uint8_t pressed = 0;
 
     bool simulating = true;
     float max_ops = 0.f;
@@ -702,29 +711,7 @@ int main()
         sf::Event event;
         while (window.pollEvent(event)) {
             ImGui::SFML::ProcessEvent(event);
-            if (event.type == sf::Event::KeyPressed)
-            {
-                if (event.key.code == sf::Keyboard::W)
-                    pressed |= KEYW;
-                else if (event.key.code == sf::Keyboard::S)
-                    pressed |= KEYS;
-                else if (event.key.code == sf::Keyboard::A)
-                    pressed |= KEYA;
-                else if (event.key.code == sf::Keyboard::D)
-                    pressed |= KEYD;
-            }
-            else if (event.type == sf::Event::KeyReleased)
-            {
-                if (event.key.code == sf::Keyboard::W)
-                    pressed &= (0xff ^ KEYW);
-                else if (event.key.code == sf::Keyboard::S)
-                    pressed &= (0xff ^ KEYS);
-                else if (event.key.code == sf::Keyboard::A)
-                    pressed &= (0xff ^ KEYA);
-                else if (event.key.code == sf::Keyboard::D)
-                    pressed &= (0xff ^ KEYD);
-            }
-            else if (event.type == sf::Event::MouseMoved)
+            if (event.type == sf::Event::MouseMoved)
             {
                 mousePos = sf::Vector2f(event.mouseMove.x - float(size.x)/2, event.mouseMove.y - float(size.y)/2);
             }
@@ -749,17 +736,6 @@ int main()
             }
             else if (event.type == sf::Event::Closed) {
                 window.close();
-            }
-        }
-        const float move_speed = 5.f;
-        for (int i = 0; i < 4; i++)
-        {
-            if ((pressed >> i) & 1)
-            {
-                if (i < 2)
-                    camPos.y += move_speed * zoom * ((i & 1) ? 1.f : -1.f);
-                else
-                    camPos.x += move_speed * zoom * ((i & 1) ? 1.f : -1.f);
             }
         }
         if (prevZoom != zoom)
@@ -792,33 +768,32 @@ int main()
             }
         }
         std::string max_operat = add_commas(std::to_string_with_precision(max_ops));
-        ImGui::Text("Operations = n^2 * UPS * 16");
-        ImGui::Text(std::string("OPS    : " + operations).c_str());
+        ImGui::Text(std::string("OPS:     " + operations).c_str());
         ImGui::Text(std::string("MAX OPS: " + max_operat).c_str());
+        ImGui::Text("OPS = n^2 * UPS");
         ImGui::Text(std::string("PLANETS: " + std::to_string(system.planetsLength)).c_str());
         ImGui::SliderInt(" :UPF", &updatesPerFrame, 1, 50);
         ImGui::SliderInt(" :Threads", &NUM_THREADS, 1, 20);
-        ImGui::Checkbox(" :Simd", &simd);
+        ImGui::Checkbox(" :SIMD", &simd);
         ImGui::Checkbox(" :Lock Framerate", &static_framerate);
-        ImGui::Checkbox(" :Planet Merging", &merging);
-        ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
-        ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
+        //ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
+        //ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
         ImGui::Text(std::string("ZOOM: " + std::to_string_with_precision(zoom)).c_str());
-        
-        if (ImGui::Button("Run Tests"))
+        ImGui::Checkbox(": Run Simulation", &simulating);
+        /*if (ImGui::Button("Run Tests"))
         {
             NUM_THREADS = std::thread::hardware_concurrency();
             script_speed = true;
         }
-        if (script_speed) ImGui::Text(std::string("Running").c_str());
+        if (script_speed) ImGui::Text(std::string("Running").c_str());*/
         ImGui::End();
 
+        float smin = -1000000;
+        float smax = 1000000;
         ImGui::Begin("Modify Planet");
         ImGui::SliderInt(": ID", &selectedPlanet, 1, system.planetsLength);
         if (PlanetOption temp = system.GetPlanet(selectedPlanet))
         {
-            float smin = -1000000;
-            float smax = 1000000;
             float dmin = -1000.0;
             float dmax = 1000.0;
             Planet planet = temp;
@@ -834,30 +809,49 @@ int main()
             {
                 gravity = _mm256_set1_ps(G);
             }
-            ImGui::SliderInt(": Tiers",    &tiers,    1, 4);
-            ImGui::SliderInt(": Children", &children, 1, 10);
-            ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
-            if (ImGui::Button("Remove Planet"))
-            {
-                system.EmptyPlanet(selectedPlanet);
-            }
-            if (ImGui::Button("Add Planet"))
-            {
-                system.AddPlanet(smin, smin, 0, 0, 0.5);
-                selectedPlanet = system.planetsLength;
-            }
-            if (ImGui::Button("Add Random"))
-            {
-                system.AddRandomSatellite(selectedPlanet);
-            }
-            if (ImGui::Button("Add Universe"))
-            {
-                system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
-                system.ThreadedMergePlanets();
-            }
+            
             ImGui::Checkbox(": Follow Selected", &gotoSelected);
-            ImGui::Checkbox(": Run Simulation", &simulating);
+            
         }
+        ImGui::End();
+
+        ImGui::Begin("Modify Universe");
+        
+        ImGui::SliderInt(": Tiers", &tiers, 1, 4);
+        ImGui::SliderInt(": Children", &children, 1, 10);
+        ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
+        if (ImGui::Button("Add Universe", {200,20}))
+        {
+            system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
+            system.ThreadedMergePlanets();
+        }
+        if (ImGui::Button("Remove Planet", { 200,20 }))
+        {
+            system.EmptyPlanet(selectedPlanet);
+        }
+        if (ImGui::Button("Remove All But Selected", { 200,20 })) {
+            system.RemoveAllButSelected(selectedPlanet);
+        }
+        if (ImGui::Button("Add Planet", { 200,20 }))
+        {
+            system.AddPlanet(smin, smin, 0, 0, 0.5);
+            selectedPlanet = system.planetsLength;
+        }
+        if (ImGui::Button("Add Random", { 200,20 }))
+        {
+            system.AddRandomSatellite(selectedPlanet);
+        }
+        ImGui::Checkbox(" :Planet Merging", &merging);
+        ImGui::End();
+
+        ImGui::Begin("Instructions");
+        ImGui::TextWrapped(
+            "Welcome to the 2D Solar Simulator!\n"
+            "The best way to move around is to scroll to wherever you point the mouse. \n"
+            "You can ctrl+click on a slider to enter a specific value. \n"
+            "You can select follow selected for the camera to follow the planet that's currently selected. \n"
+            "If you have any questions contact me at Ober3550@gmail.com! "
+        );
         ImGui::End();
         
         if (simulating)
