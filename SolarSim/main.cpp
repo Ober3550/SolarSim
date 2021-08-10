@@ -310,8 +310,8 @@ public:
         this->tick = tick;
         if (!tick)
         {
-            AddPlanet(0, 0, 0, 0, 50, 0, 1000);
-            AddPlanet(5000, 0, 0, 0, -50, 0, 1000);
+            AddPlanet(-2500, 0, 0, 0, 50, 0, 1000);
+            AddPlanet( 2500, 0, 0, 0, -50, 0, 1000);
         }
     }
     PlanetObject GetPlanetObject(int64_t id)
@@ -750,17 +750,26 @@ int main()
     
     // Opengl stuff -------------------------------
     
-    glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
+    glm::vec3 cameraPos   = glm::vec3(0.0f, 0.0f, 1.0f);
     glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
-    glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-    float cameraPitch = 0.f;
-    float cameraYaw = 0.f;
+    glm::vec3 cameraUp    = glm::vec3(0.0f, 1.0f, 0.0f);
+    float cameraPitch     = 0.f;
+    float cameraYaw       = -90.f;
+
+    glm::vec3 direction;
+    direction.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+    direction.y = sin(glm::radians(cameraPitch));
+    direction.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+    cameraFront = glm::normalize(direction);
 
     glm::vec3 cameraTarget = glm::vec3(0.0f, 0.0f, 0.0f);
     glm::vec3 cameraDirection = glm::normalize(cameraPos - cameraTarget);
     glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
     glm::vec3 cameraRight = glm::normalize(glm::cross(up, cameraDirection));
     cameraUp = glm::cross(cameraDirection, cameraRight);
+
+    cameraPos.y += 1;
+    cameraPos.z += 2;
 
     
     double frustRight = 1;
@@ -775,7 +784,7 @@ int main()
 
     GLfloat black[] = { 0.0, 0.0, 0.0, 1.0 };
     GLfloat white[] = { 1.0, 1.0, 1.0, 1.0 };
-    GLfloat direction[] = { 0.0, 0.0, 1.0, 1.0 };
+    GLfloat lightdirection[] = { 0.0, 0.0, 1.0, 1.0 };
 
     glMaterialfv(GL_FRONT,  GL_AMBIENT_AND_DIFFUSE, white);
     glMaterialfv(GL_FRONT,  GL_SPECULAR,            white);
@@ -784,7 +793,7 @@ int main()
     glLightfv(GL_LIGHT0, GL_AMBIENT,  black);
     glLightfv(GL_LIGHT0, GL_DIFFUSE,  white);
     glLightfv(GL_LIGHT0, GL_SPECULAR, white);
-    glLightfv(GL_LIGHT0, GL_POSITION, direction);
+    glLightfv(GL_LIGHT0, GL_POSITION, lightdirection);
 
     glEnable(GL_LIGHTING);                // so the renderer considers light
     glEnable(GL_LIGHT0);                  // turn LIGHT0 on
@@ -888,7 +897,12 @@ int main()
         {
             cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed * accelerate;
         }
-
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::LShift)) {
+            cameraPos.y -= cameraSpeed;
+        }
+        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Space)) {
+            cameraPos.y += cameraSpeed;
+        }
 
         if (running)
         {
@@ -902,41 +916,19 @@ int main()
             ImGui::PushItemWidth(150);
             //ImGui::Text(std::string("POS : " + std::to_string_with_precision(camPos.x) + ", " + std::to_string_with_precision(camPos.y)).c_str());
             //ImGui::Text(std::string("MPOS: " + std::to_string_with_precision(mousePos.x) + ", " + std::to_string_with_precision(mousePos.y)).c_str());
-            ImGui::Text(std::string("FPS:     " + std::to_string_with_precision(frameRate)).c_str());
-            ImGui::Text(std::string("UPS:     " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
-            ImGui::Text(std::string("OPS:     " + std::to_string_with_formatting(frameRate * float(updatesPerFrame * simulation.front().planetsLength * simulation.front().planetsLength))).c_str());
+            ImGui::Text(std::string("FPS:  " + std::to_string_with_precision(frameRate)).c_str());
+            ImGui::Text(std::string("UPS:  " + std::to_string_with_precision(frameRate * float(updatesPerFrame))).c_str());
+            ImGui::Text(std::string("OPS:  " + std::to_string_with_formatting(frameRate * float(updatesPerFrame * simulation.front().planetsLength * simulation.front().planetsLength))).c_str());
+            ImGui::Text("OPS = n^2 * UPS");
             ImGui::Text(std::string("Tick: " + std::to_string(simulation.front().tick)).c_str());
-            
             ImGui::SliderInt(":UPF", &updatesPerFrame, 1, 50);
             ImGui::SliderInt(":THREADS", &NUM_THREADS, 1, 20);
+            ImGui::Checkbox(":SIMD", &simd);
             //ImGui::Checkbox(" :Threaded", &multi_threaded);
-            //ImGui::Checkbox(" :Simd", &simd);
             //ImGui::Checkbox(" :Lock Framerate", &static_framerate);
-            if (ImGui::SliderInt(":Forward Frames", &forward_calculation, 1, 2000))
-            {
-                recalculate_frames = true;
-            }
-            ImGui::SliderInt(":Orbit spacing", &tick_spacing, 1, 50);
-            if (ImGui::SliderFloat(":Gravity", &G, 0.1, 10))
-            {
-                gravity = _mm256_set1_pd(G);
-            }
-            ImGui::Checkbox(":Planet Merging", &merging);
             ImGui::Checkbox(":Run Simulation", &runSimulation);
             ImGui::Checkbox(":Draw Plane", &drawPlane);
-            if (time_recalculation) 
-            {
-                if (frameClock.getElapsedTime().asMilliseconds() > 1000)
-                {
-                    recalc_time = std::string("Recalculated in " + std::to_string_with_formatting(frameClock.getElapsedTime().asSeconds()) + "s");
-                }
-                else
-                {
-                    recalc_time = std::string("Recalculated in " + std::to_string_with_formatting(frameClock.getElapsedTime().asMilliseconds()) + "ms");
-                }
-                time_recalculation = false;
-            }
-            ImGui::Text(recalc_time.c_str());
+            
             ImGui::End();
             frameClock.restart();
 
@@ -975,11 +967,9 @@ int main()
                     *planet.dz = double(pdz);
                     *planet.mass = double(pm);
                 }
-                if (ImGui::Button("Recalculate Frames"))
+                if (ImGui::SliderFloat(":Gravity", &G, 0.1, 10))
                 {
-                    while (simulation.size() > 1)
-                        simulation.pop_back();
-                    recalculate_frames = true;
+                    gravity = _mm256_set1_pd(G);
                 }
             }
             ImGui::End();
@@ -1013,6 +1003,31 @@ int main()
                     simulation.pop_back();
                 selectedPlanet = 1;
             }
+            ImGui::Checkbox(":Planet Merging", &merging);
+            if (ImGui::Button("Recalculate Orbital Paths"))
+            {
+                while (simulation.size() > 1)
+                    simulation.pop_back();
+                recalculate_frames = true;
+            }
+            if (ImGui::SliderInt(":Forward Orbit", &forward_calculation, 1, 2000))
+            {
+                recalculate_frames = true;
+            }
+            ImGui::SliderInt(":Orbit spacing", &tick_spacing, 1, 50);
+            if (time_recalculation)
+            {
+                if (frameClock.getElapsedTime().asMilliseconds() > 1000)
+                {
+                    recalc_time = std::string("Recalculated in " + std::to_string_with_formatting(frameClock.getElapsedTime().asSeconds()) + "s");
+                }
+                else
+                {
+                    recalc_time = std::string("Recalculated in " + std::to_string_with_formatting(frameClock.getElapsedTime().asMilliseconds()) + "ms");
+                }
+                time_recalculation = false;
+            }
+            ImGui::Text(recalc_time.c_str());
             ImGui::End();
             
             if (recalculate_frames || !ImGui::IsAnyWindowFocused())
@@ -1049,6 +1064,21 @@ int main()
                 }
             }
             //ImGui::ShowDemoWindow();
+
+            ImGui::Begin("Instructions");
+            ImGui::TextWrapped(
+                "Welcome to the 3D version of the solar simulator! \n"
+                "To lock and unlock the mouse for looking around press E \n"
+                "Traditional movement methods are used: \n"
+                "W, A, S, D, LShift, Space \n"
+                "Forward, left, back, right, up, down \n"
+                "The simulation will not run aslong as a menu is being used. \n"
+                "Please be aware that just because you can "
+                "select a large number of planets to simulate "
+                "doesn't mean your computer will have the power to. \n"
+                "Hopefully the controls are self explanatory if you have issues contact me at Ober3550@gmail.com!"
+            );
+            ImGui::End();
 
             {
                 window.popGLStates();
