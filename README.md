@@ -2,12 +2,9 @@
 A solar simulation to demonstrate gravity and the power of multithreading and SIMD.
 Two great little apps that can be used in the classroom!
 ## Now in 3D!
-![](assets/PlanetaryPaths.gif)
-![](assets/WithShading.gif)
-![](assets/NowIn3D.gif)
-![](assets/StableUniverse.gif)
-![](assets/MaximumPower.gif)
-![](assets/PlanetMerging.gif)
-![](assets/MoreMerging.gif)
-![](assets/NonMergingPerf.gif)
-![](assets/MergingUniverse.gif)
+<img src="assets/PlanetaryPaths.gif" width="800"/>  
+<img src="assets/WithShading.gif" width="800"/>  
+<img src="assets/NowIn3D.gif" width="800"/>  
+<img src="assets/StableUniverse.gif" width="800"/>  
+<img src="assets/PlanetMerging.gif" width="800"/>  
+<img src="assets/MoreMerging.gif" width="800"/>  
