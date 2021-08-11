@@ -69,9 +69,15 @@ sf::Vector2f camPos = { 0.f,0.f };
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int tiers = 2;
-int children = 120;
+int children = 80;
 bool static_framerate = false;
 int global_tick = 0;
+
+float min_dis = 10.f;
+float max_dis = 150.f;
+float max_prop = 50.f;
+float min_prop = 200.f;
+float start_vel = 1.5f;
 
 std::string results = "Test,SIMD,Threads,Time\n";
 
@@ -301,26 +307,19 @@ public:
         if (PlanetOption temp = GetPlanet(id))
         {
             Planet parent = temp;
-            const int angles = (360 * 32);
-            const int steps = 1000;
-            const float min_dis = 5.f;
-            const float max_dis = 100.f;
-            const float dif_dis = max_dis - min_dis;
-            const float min_prop = 0.005;
-            const float max_prop = 0.05f;
-            const float dif_prop = max_prop - min_prop;
-            const int   mas_step = 1000;
-            float new_mass = min_prop + float(rand() % mas_step) / mas_step * dif_prop * (*parent.mass);
-            float angle = float(rand() % angles) / float(angles);
-            angle *= 2.f * pi;
+            int angles = (360 * 32);
+            int steps = 1000;
+            int   mas_step = 1000;
+            float dif_dis = max_dis - min_dis;
+            float dif_prop = (1 / max_prop) - (1 / min_prop);
+            float new_mass = (1 / min_prop) + float(rand() % mas_step) / mas_step * dif_prop * (*parent.mass);
+            float angle = (float(rand() % angles) / float(angles)) * 2.f * pi;
             float magni = (*parent.r) + (*parent.mass) * (min_dis + float(rand() % steps) / float(steps) * dif_dis);
             float new_x = (*parent.x) + cos(angle) * magni;
             float new_y = (*parent.y) + sin(angle) * magni;
-            float new_dx;
-            float new_dy;
-            float scalar = sqrt(0.5f*G*((*parent.mass) + 0.5f * children * new_mass));
-            new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
-            new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
+            float scalar = start_vel * sqrt(0.5f * G * ((*parent.mass) + 0.5f * children * new_mass));
+            float new_dx = (*parent.dx) + cos(angle + pi * 0.5f) * scalar;
+            float new_dy = (*parent.dy) + sin(angle + pi * 0.5f) * scalar;
             AddPlanet(new_x, new_y, new_dx, new_dy, new_mass);
         }
     }
@@ -595,9 +594,9 @@ public:
                     __m256 Fy = _mm256_mul_ps(F, ry);
                     if (i == k) {
                         // Mask out idA==idB
-                        __m256i bothmask = _mm256_xor_si256(_mm256_cmpeq_epi32(groupB->id, planetA_id), m_onesi);
-                        Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(bothmask));
-                        Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(bothmask));
+                        __m256i mask = _mm256_xor_si256(_mm256_cmpeq_epi32(groupB->id, planetA_id), m_onesi);
+                        Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(mask));
+                        Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(mask));
                     }
                     // Accumulate forces in 8 wide simd vectors
 /*15*/              planetA_Fx = _mm256_add_ps(planetA_Fx, Fx);
@@ -623,13 +622,11 @@ public:
                     // Find the forces for each dimension
                     __m256 Fx = _mm256_mul_ps(F, rx);
                     __m256 Fy = _mm256_mul_ps(F, ry);
-                    // Remove nan values such as planets affecting themselves
+                    // Mask out idA==idB
+                    __m256i maskA = _mm256_cmpeq_epi32(groupB->id, planetA_id);
                     // If id == 0
-                    __m256i zeromask = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
-                    // If groupA.id == groupB.id
-                    __m256i idmask = _mm256_cmpeq_epi32(groupB->id, planetA_id);
-                    __m256i bothmask = _mm256_or_si256(zeromask, idmask);
-                    bothmask = _mm256_xor_si256(bothmask, m_onesi);
+                    __m256i maskB = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
+                    __m256i bothmask = _mm256_xor_si256(_mm256_or_si256(maskA, maskB),m_onesi);
                     Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(bothmask));
                     Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(bothmask));
                     // Accumulate forces in 8 wide simd vectors
@@ -844,7 +841,10 @@ int main()
         ImGui::End();
 
         ImGui::Begin("Modify Universe");
-        
+        ImGui::Text("Children Properties:");
+        ImGui::DragFloatRange2(": 1/Size", &min_prop, &max_prop);
+        ImGui::DragFloatRange2(": Distance", &min_dis, &max_dis);
+        ImGui::SliderFloat(": Velocity", &start_vel,0.5f,3.f);
         ImGui::SliderInt(": Tiers", &tiers, 1, 4);
         ImGui::SliderInt(": Children", &children, 1, 10);
         ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
