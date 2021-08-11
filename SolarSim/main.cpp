@@ -574,7 +574,7 @@ public:
                 __m256  planetA_mass = _mm256_set1_ps(groupA->mass.m256_f32[j]);
                 __m256i planetA_id = _mm256_set1_epi32(groupA->id.m256i_i32[j]);
 
-                for (int k = 0; k < planets.size(); k++)
+                for (int k = 0; k < planets.size()-1; k++)
                 {
                     // START CORE LOOP
                     PlanetGroup* groupB = &planets[k];
@@ -591,22 +591,50 @@ public:
 /*7*/               __m256 gm   = _mm256_mul_ps(mass, gravity);
 /*8*/               __m256 F    = _mm256_div_ps(gm, r2);
                     // Find the forces for each dimension
-                    __m256 Fx; 
-                    __m256 Fy;
-                    Fx = _mm256_mul_ps(F, rx);
-                    Fy = _mm256_mul_ps(F, ry);
-                    // Remove nan values such as planets affecting themselves
-                    // If id == 0
-/*9*/               __m256i zeromask = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
-/*10*/              __m256i idmask   = _mm256_cmpeq_epi32(groupB->id, planetA_id);
-                    // If groupA.id == groupB.id
-/*11*/              __m256i bothmask = _mm256_or_si256(zeromask, idmask);
-/*12*/              bothmask = _mm256_xor_si256(bothmask, m_onesi);
-/*13*/              Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(bothmask));
-/*14*/              Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(bothmask));
+                    __m256 Fx = _mm256_mul_ps(F, rx);
+                    __m256 Fy = _mm256_mul_ps(F, ry);
+                    if (i == k) {
+                        // Mask out idA==idB
+                        __m256i bothmask = _mm256_xor_si256(_mm256_cmpeq_epi32(groupB->id, planetA_id), m_onesi);
+                        Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(bothmask));
+                        Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(bothmask));
+                    }
                     // Accumulate forces in 8 wide simd vectors
 /*15*/              planetA_Fx = _mm256_add_ps(planetA_Fx, Fx);
 /*16*/              planetA_Fy = _mm256_add_ps(planetA_Fy, Fy);
+                    // END CORE LOOP
+                }
+                {
+                    int k = planets.size() - 1;
+                    // START CORE LOOP
+                    PlanetGroup* groupB = &planets[k];
+                    // Subtract planet As position from groups positions to find relative distance
+                    __m256 rx = _mm256_sub_ps(groupB->x, planetA_x);
+                    __m256 ry = _mm256_sub_ps(groupB->y, planetA_y);
+                    // Find the square of each distance
+                    __m256 rx2 = _mm256_mul_ps(rx, rx);
+                    __m256 ry2 = _mm256_mul_ps(ry, ry);
+                    // Find the euclidean distance squared
+                    __m256 r2 = _mm256_add_ps(rx2, ry2);
+                    // Calculate gravity
+                    __m256 mass = _mm256_mul_ps(groupB->mass, planetA_mass);
+                    __m256 gm = _mm256_mul_ps(mass, gravity);
+                    __m256 F = _mm256_div_ps(gm, r2);
+                    // Find the forces for each dimension
+                    __m256 Fx = _mm256_mul_ps(F, rx);
+                    __m256 Fy = _mm256_mul_ps(F, ry);
+                    // Remove nan values such as planets affecting themselves
+                    // If id == 0
+                    __m256i zeromask = _mm256_cmpeq_epi32(groupB->id, m_zeroi);
+                    // If groupA.id == groupB.id
+                    __m256i idmask = _mm256_cmpeq_epi32(groupB->id, planetA_id);
+                    __m256i bothmask = _mm256_or_si256(zeromask, idmask);
+                    bothmask = _mm256_xor_si256(bothmask, m_onesi);
+                    Fx = _mm256_and_ps(Fx, _mm256_castsi256_ps(bothmask));
+                    Fy = _mm256_and_ps(Fy, _mm256_castsi256_ps(bothmask));
+                    // Accumulate forces in 8 wide simd vectors
+                    planetA_Fx = _mm256_add_ps(planetA_Fx, Fx);
+                    planetA_Fy = _mm256_add_ps(planetA_Fy, Fy);
                     // END CORE LOOP
                 }
                 // Accumulate 8 wide force vector onto single variable within planet A
