@@ -1,5 +1,6 @@
-#define SIZE 100000
-#define HALF 5000
+#define CPU_COUNT 15000
+#define GPU_COUNT 15000
+#define SIZE 30000
 #define MASS 0
 #define X 1
 #define Y 2
@@ -16,8 +17,9 @@
 __kernel void planetForce(__global float planet[SIZE*PLANET_SIZE])
 {
 	int i = get_global_id(0);
-	if(i<HALF)return;
+	if(i<CPU_COUNT)return;
 	for(int j=0;j<SIZE;j++){
+		if(planet[SIMD_IDX(j,MASS)] == 0.f)return;
 		float F,rx,ry;
 		rx = planet[SIMD_IDX(i,X)]-planet[SIMD_IDX(j,X)];
 		ry = planet[SIMD_IDX(i,Y)]-planet[SIMD_IDX(j,Y)];

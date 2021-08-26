@@ -65,11 +65,13 @@ sf::Vector2f camPos = { 0.f,0.f };
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int tiers = 2;
-int children = 200;
+int children = 100;
 bool static_framerate = false;
 int global_tick = 0;
 
-#define SIZE 100000
+#define CPU_COUNT 15000
+#define GPU_COUNT 15000
+#define SIZE 30000
 #define MASS 0
 #define X 1
 #define Y 2
@@ -91,8 +93,8 @@ float max_prop = 50.f;
 float min_prop = 200.f;
 float start_vel = 1.5f;
 float planets[SIZE*PLANET_SIZE] = {};
-float cpu_fx[SIZE];
-float cpu_fy[SIZE];
+float cpu_fx[SIZE] = {};
+float cpu_fy[SIZE] = {};
 int planetsLength = 0;
 
 struct Planet {
@@ -173,11 +175,11 @@ public:
         prog.kernel = cl::Kernel(prog.program, "planetForce");
         prog.kernel.setArg(0, prog.buffer);
         AddPlanet(0, 0, 0, 0, 1000);
-        //RecursivelyAddPlanets(selectedPlanet, children, tiers);
+        RecursivelyAddPlanets(selectedPlanet, children, tiers);
         queue = cl::CommandQueue(prog.context, cl::Device::getDefault());
     }
     void UpdatePlanets() {
-        if (planetsLength > 20000) {
+        if (planetsLength > CPU_COUNT) {
             // buffer initialisation
             queue.enqueueWriteBuffer(prog.buffer, CL_TRUE, 0, (sizeof(float) * SIZE * PLANET_SIZE), planets);
             // Executing the kernel object
@@ -186,14 +188,14 @@ public:
         // Create thread container
         std::vector<std::thread> threads;
         // Calculate work division size
-        int block_size = 20000 / 4;
+        int block_size = CPU_COUNT / 4;
         // Construct threads with given work
         for (int i = 0; i < NUM_THREADS; i++) {
             threads.emplace_back(std::thread([&](const int start, const int end) {
                 SimdUpdatePlanets(start, end);
                 }, i * block_size, (i + 1) * block_size));
         }
-        if (planetsLength > 20000) {
+        if (planetsLength > CPU_COUNT) {
             queue.finish();
             // reading results from bufferC into the C array
             queue.enqueueReadBuffer(prog.buffer, CL_TRUE, 0, (sizeof(float) * SIZE * PLANET_SIZE), planets);
