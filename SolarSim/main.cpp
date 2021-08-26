@@ -65,11 +65,11 @@ sf::Vector2f camPos = { 0.f,0.f };
 const float minZoom = 0.5;
 const float maxZoom = 256.f;
 int tiers = 2;
-int children = 100;
+int children = 200;
 bool static_framerate = false;
 int global_tick = 0;
 
-#define SIZE 10000
+#define SIZE 100000
 #define MASS 0
 #define X 1
 #define Y 2
@@ -79,14 +79,20 @@ int global_tick = 0;
 #define FY 6
 #define R 7
 #define PLANET_SIZE 8
+#define VEC_WIDTH 8
+#define SIMD_IDX(a,b) ((a / VEC_WIDTH)*(VEC_WIDTH*PLANET_SIZE)+(a % VEC_WIDTH)+VEC_WIDTH*b)
 #define G 4.0
+__m256 gravity  = _mm256_set1_ps(G);
+__m256 smallest = _mm256_set1_ps(0.00000000000001f);
 
 float min_dis = 10.f;
 float max_dis = 150.f;
 float max_prop = 50.f;
 float min_prop = 200.f;
 float start_vel = 1.5f;
-float planets[SIZE][PLANET_SIZE] = {};
+float planets[SIZE*PLANET_SIZE] = {};
+float cpu_fx[SIZE];
+float cpu_fy[SIZE];
 int planetsLength = 0;
 
 struct Planet {
@@ -100,6 +106,54 @@ struct Planet {
     float mass  = 0;
     float r     = 0;
 };
+
+void SimdUpdatePlanets(int start, int end) {
+    for (int i = start; i < std::min(end,planetsLength); i++)
+    {
+        // Create accumulators for forces
+        __m256 planetA_Fx = _mm256_set1_ps(zero);
+        __m256 planetA_Fy = _mm256_set1_ps(zero);
+
+        // Create common registers
+        __m256  planetA_x = _mm256_set1_ps(planets[SIMD_IDX(i, X)]);
+        __m256  planetA_y = _mm256_set1_ps(planets[SIMD_IDX(i, Y)]);
+        __m256  planetA_mass = _mm256_set1_ps(planets[SIMD_IDX(i, MASS)]);
+
+        for (int k = 0; k < (planetsLength / VEC_WIDTH); k++)
+        {
+            __m256 group_x = _mm256_load_ps(&planets[SIMD_IDX((k * VEC_WIDTH), X)]);
+            __m256 group_y = _mm256_load_ps(&planets[SIMD_IDX((k * VEC_WIDTH), Y)]);
+            __m256 group_mass = _mm256_load_ps(&planets[SIMD_IDX((k * VEC_WIDTH), MASS)]);
+            // START CORE LOOP
+            // Subtract planet As position from groups positions to find relative distance
+            __m256 rx = _mm256_sub_ps(group_x, planetA_x);
+            __m256 ry = _mm256_sub_ps(group_y, planetA_y);
+            // Find the square of each distance
+            __m256 rx2 = _mm256_mul_ps(rx, rx);
+            __m256 ry2 = _mm256_mul_ps(ry, ry);
+            // Find the euclidean distance squared
+            __m256 r2 = _mm256_add_ps(rx2, ry2);
+            r2 = _mm256_add_ps(r2, smallest);
+            // Calculate gravity
+            __m256 mass = _mm256_mul_ps(group_mass, planetA_mass);
+            __m256 gm = _mm256_mul_ps(mass, gravity);
+            __m256 F = _mm256_div_ps(gm, r2);
+            // Find the forces for each dimension
+            __m256 Fx = _mm256_mul_ps(F, rx);
+            __m256 Fy = _mm256_mul_ps(F, ry);
+            // Accumulate forces in 8 wide simd vectors
+            planetA_Fx = _mm256_add_ps(planetA_Fx, Fx);
+            planetA_Fy = _mm256_add_ps(planetA_Fy, Fy);
+            // END CORE LOOP
+        }
+        // Accumulate 8 wide force vector onto single variable within planet A
+        for (int l = 0; l < VEC_WIDTH; l++)
+        {
+            cpu_fx[i] += planetA_Fx.m256_f32[l];
+            cpu_fy[i] += planetA_Fy.m256_f32[l];
+        }
+    }
+}
 
 class SolarSystem {
 public:
@@ -119,29 +173,67 @@ public:
         prog.kernel = cl::Kernel(prog.program, "planetForce");
         prog.kernel.setArg(0, prog.buffer);
         AddPlanet(0, 0, 0, 0, 1000);
-        RecursivelyAddPlanets(selectedPlanet, children, tiers);
+        //RecursivelyAddPlanets(selectedPlanet, children, tiers);
         queue = cl::CommandQueue(prog.context, cl::Device::getDefault());
-        // buffer initialisation
-        queue.enqueueWriteBuffer(prog.buffer, CL_TRUE, 0, (sizeof(float) * SIZE * PLANET_SIZE), planets);
     }
     void UpdatePlanets() {
-        // Executing the kernel object
-        queue.enqueueNDRangeKernel(prog.kernel, cl::NullRange, cl::NDRange(SIZE), cl::NullRange);
-        queue.finish();
-        // reading results from bufferC into the C array
-        queue.enqueueReadBuffer(prog.buffer, CL_TRUE, 0, (sizeof(float) * SIZE * PLANET_SIZE), planets);
+        if (planetsLength > 20000) {
+            // buffer initialisation
+            queue.enqueueWriteBuffer(prog.buffer, CL_TRUE, 0, (sizeof(float) * SIZE * PLANET_SIZE), planets);
+            // Executing the kernel object
+            queue.enqueueNDRangeKernel(prog.kernel, cl::NullRange, cl::NDRange(SIZE), cl::NullRange);
+        }
+        // Create thread container
+        std::vector<std::thread> threads;
+        // Calculate work division size
+        int block_size = 20000 / 4;
+        // Construct threads with given work
+        for (int i = 0; i < NUM_THREADS; i++) {
+            threads.emplace_back(std::thread([&](const int start, const int end) {
+                SimdUpdatePlanets(start, end);
+                }, i * block_size, (i + 1) * block_size));
+        }
+        if (planetsLength > 20000) {
+            queue.finish();
+            // reading results from bufferC into the C array
+            queue.enqueueReadBuffer(prog.buffer, CL_TRUE, 0, (sizeof(float) * SIZE * PLANET_SIZE), planets);
+        }
+        // Join threads
+        for (int i = 0; i < NUM_THREADS; i++){
+            threads[i].join();
+        }
+        ApplyForces();
+    }
+    void ApplyForces() {
+        for (int i = 0; i < SIZE; i++) {
+            if (cpu_fx[i] != 0.f) {
+                planets[SIMD_IDX(i, DX)] += cpu_fx[i] / planets[SIMD_IDX(i, MASS)];
+                planets[SIMD_IDX(i, DY)] += cpu_fy[i] / planets[SIMD_IDX(i, MASS)];
+                cpu_fx[i] = 0.f;
+                cpu_fy[i] = 0.f;
+            }
+            else {
+                planets[SIMD_IDX(i, DX)] += planets[SIMD_IDX(i, FX)] / planets[SIMD_IDX(i, MASS)];
+                planets[SIMD_IDX(i, DY)] += planets[SIMD_IDX(i, FY)] / planets[SIMD_IDX(i, MASS)];
+            }
+            planets[SIMD_IDX(i, X)]  += planets[SIMD_IDX(i, DX)];
+            planets[SIMD_IDX(i, Y)]  += planets[SIMD_IDX(i, DY)];
+            planets[SIMD_IDX(i, FX)]  = 0;
+            planets[SIMD_IDX(i, FY)]  = 0;
+        }
     }
     void AddPlanet(float x, float y, float dx, float dy, float mass)
     {
         if (planetsLength < SIZE) {
-            planets[planetsLength][X]       = x;
-            planets[planetsLength][Y]       = y;
-            planets[planetsLength][DX]      = dx;
-            planets[planetsLength][DY]      = dy;
-            planets[planetsLength][FX]      = 0.f;
-            planets[planetsLength][FY]      = 0.f;
-            planets[planetsLength][MASS]    = mass;
-            planets[planetsLength][R]       = sqrt(mass / pi) * 128.f;
+            int i = planetsLength;
+            planets[SIMD_IDX(i,X)]      = x;
+            planets[SIMD_IDX(i,Y)]      = y;
+            planets[SIMD_IDX(i,DX)]     = dx;
+            planets[SIMD_IDX(i,DY)]     = dy;
+            planets[SIMD_IDX(i,FX)]     = 0.f;
+            planets[SIMD_IDX(i,FY)]     = 0.f;
+            planets[SIMD_IDX(i,MASS)]   = mass;
+            planets[SIMD_IDX(i,R)]      = sqrt(mass / pi) * 128.f;
             planetsLength++;
         }
     }
@@ -149,33 +241,34 @@ public:
     {
         Planet planet;
         planet.id   = id;
-        planet.x    = planets[id][X];
-        planet.y    = planets[id][Y];
-        planet.dx   = planets[id][DX];
-        planet.dy   = planets[id][DY];
-        planet.Fx   = planets[id][FX];
-        planet.Fy   = planets[id][FY];
-        planet.mass = planets[id][MASS];
-        planet.r    = planets[id][R];
+        planet.x    = planets[SIMD_IDX(id, X)];
+        planet.y    = planets[SIMD_IDX(id, Y)];
+        planet.dx   = planets[SIMD_IDX(id, DX)];
+        planet.dy   = planets[SIMD_IDX(id, DY)];
+        planet.Fx   = planets[SIMD_IDX(id, FX)];
+        planet.Fy   = planets[SIMD_IDX(id, FY)];
+        planet.mass = planets[SIMD_IDX(id, MASS)];
+        planet.r    = planets[SIMD_IDX(id, R)];
         return planet;
     }
     void SetPlanet(Planet planet) {
-        planets[planet.id][X]       = planet.x;
-        planets[planet.id][Y]       = planet.y;
-        planets[planet.id][DX]      = planet.dx;
-        planets[planet.id][DY]      = planet.dy;
-        planets[planet.id][FX]      = planet.Fx;
-        planets[planet.id][FY]      = planet.Fy;
-        planets[planet.id][MASS]    = planet.mass;
-        planets[planet.id][R]       = sqrt(planet.mass / pi) * 128.f;;
+        int id = planet.id;
+        planets[SIMD_IDX(id, X)]    = planet.x;
+        planets[SIMD_IDX(id, Y)]    = planet.y;
+        planets[SIMD_IDX(id, DX)]   = planet.dx;
+        planets[SIMD_IDX(id, DY)]   = planet.dy;
+        planets[SIMD_IDX(id, FX)]   = 0.f;
+        planets[SIMD_IDX(id, FY)]   = 0.f;
+        planets[SIMD_IDX(id, MASS)] = planet.mass;
+        planets[SIMD_IDX(id, R)]    = sqrt(planet.mass / pi) * 128.f;
     }
     void RemovePlanet(int id) {
-        planets[id][MASS] = 0;
+        planets[SIMD_IDX(id, MASS)] = 0;
     }
     void RemoveAllButSelected(int id) {
         for (int i = 0; i < SIZE; i++) {
             if(i!=id)
-            planets[i][MASS] = 0;
+                planets[SIMD_IDX(i, MASS)] = 0;
         }
     }
     void AddRandomSatellite(int id) {
@@ -216,17 +309,17 @@ public:
         std::vector<sf::Sprite> sprites;
         for (int i = 0; i < SIZE;i++)
         {
-            if (planets[i][MASS] != 0.f) {
+            if (planets[SIMD_IDX(i,MASS)] != 0.f) {
                 sf::Sprite sprite;
                 sprite.setTexture(circle);
                 sprite.setOrigin(128, 128);
-                sprite.setPosition(planets[i][X], planets[i][Y]);
+                sprite.setPosition(planets[SIMD_IDX(i, X)], planets[SIMD_IDX(i, Y)]);
                 if (i == selectedPlanet)
                 {
                     if (gotoSelected)
-                        camPos = { planets[i][X], planets[i][Y] };
+                        camPos = { planets[SIMD_IDX(i,X)], planets[SIMD_IDX(i,Y)] };
                 }
-                sprite.setScale(planets[i][R] / 128.f, planets[i][R] / 128.f);
+                sprite.setScale(planets[SIMD_IDX(i, R)] / 128.f, planets[SIMD_IDX(i, R)] / 128.f);
                 sprites.emplace_back(sprite);
             }
         }
@@ -376,7 +469,7 @@ int main()
         ImGui::DragFloatRange2(": Distance", &min_dis, &max_dis);
         ImGui::SliderFloat(": Velocity", &start_vel,0.5f,3.f);
         ImGui::SliderInt(": Tiers", &tiers, 1, 4);
-        ImGui::SliderInt(": Children", &children, 1, 10);
+        ImGui::SliderInt(": Children", &children, 1, 300);
         ImGui::Text(std::string("Settings will add " + std::to_string(int(std::pow(children, tiers))) + " planets.").c_str());
         if (ImGui::Button("Add Universe", { 200,20 })) {
             system.RecursivelyAddPlanets(selectedPlanet, children, tiers);
